@@ -3,6 +3,7 @@ import { gerstnerGLSL } from './waves.js';
 import { SKY_GLSL, NOISE_GLSL } from './sky.js';
 
 export const NISL = 16;   // islands the water can shoal against
+export const WAKE = 28;   // samples of the player's recent track
 
 /* Quality tiers. `ultra` is sized for a 32-core Apple GPU at native
    Retina: half a million ocean triangles and a 32-wave spectrum. */
@@ -67,6 +68,10 @@ export class Ocean {
       uShallow:{ value: new THREE.Color(0.085,0.585,0.575) },
       uSSS:{ value: new THREE.Color(0.065,0.430,0.400) },
       uFoamAmt:{ value: 1.0 },
+      // a hull's turbulent trail: (x, z, age, strength) per sample
+      uWake:{ value: Array.from({length:WAKE}, () => new THREE.Vector4(0,0,0,0)) },
+      uWakeOn:{ value: 0 },
+      uWakeAt:{ value: new THREE.Vector3(0,0,0) },
       uDetail:{ value: 1.0 },
       uSeaSwell:{ value: 1.0 },
       uWaveCut:{ value: NW },
@@ -108,6 +113,30 @@ export class Ocean {
         uniform float uRTSteps;
         uniform vec3 uDeep, uMid, uShallow, uSSS;
         uniform float uFoamAmt, uDetail, uSeaSwell, uWaveCut;
+        uniform vec4 uWake[${WAKE}];
+        uniform float uWakeOn;
+        uniform vec3 uWakeAt;
+
+        /* Disturbed water behind a hull. Each sample of the track leaves a
+           patch that widens and fades as it ages, which is the part of a wake
+           you actually read at sea — the Kelvin arms are far subtler than the
+           churn. Gated on distance so open water pays nothing for it. */
+        float wakeFoam(vec2 p){
+          if(uWakeOn < 0.5) return 0.0;
+          if(distance(p, uWakeAt.xz) > 260.0) return 0.0;
+          float f = 0.0;
+          for(int i=0;i<${WAKE};i++){
+            vec4 w = uWake[i];
+            if(w.w <= 0.001) continue;
+            float age = w.z;
+            float width = 2.2 + age*3.4;
+            vec2 d = p - w.xy;
+            float r2 = dot(d,d);
+            if(r2 > width*width*6.0) continue;
+            f = max(f, w.w*exp(-age*0.5)*exp(-r2/(width*width)));
+          }
+          return clamp(f, 0.0, 1.0);
+        }
 
         /* ── ray tracing against the analytic sea ──────────────────
            There is no hardware RT in WebGL, but the water *is* a
@@ -287,7 +316,8 @@ export class Ocean {
             float band = sin(ring*0.30 - uTime*1.15)*0.5 + 0.5;
             surf = smoothstep(0.55,1.0,sh)*0.9 + smoothstep(0.16,0.60,sh)*pow(band,3.0)*0.85;
           }
-          float f = clamp((crestFoam + tipFoam + surf)*uFoamAmt, 0.0, 1.0);
+          float wake = wakeFoam(vWorld.xz);
+          float f = clamp((crestFoam + tipFoam + surf)*uFoamAmt + wake*0.85, 0.0, 1.0);
           float ftex = mix(0.5, fbm(vBase*0.8 + uWindDir*uTime*0.35, FOAM_OCT),
                            smoothstep(1.6, 0.25, px));
           f *= smoothstep(0.26, 0.74, ftex + f*0.38);
@@ -334,6 +364,19 @@ export class Ocean {
       const isl = list[i];
       if(isl){ u[i].set(isl.pos.x, isl.pos.z, isl.shoreR, isl.shoalW); p[i] = isl.peak; }
       else { u[i].set(0,0,-1,1); p[i] = 1; }
+    }
+  }
+
+  /* `track` is the hull's recent positions, newest last. */
+  setWake(track, at, on){
+    const u = this.uniforms.uWake.value;
+    this.uniforms.uWakeOn.value = on ? 1 : 0;
+    if(!on) return;
+    this.uniforms.uWakeAt.value.copy(at);
+    for(let i = 0; i < WAKE; i++){
+      const s = track[i];
+      if(s) u[i].set(s.x, s.z, s.age, s.strength);
+      else u[i].set(0,0,0,0);
     }
   }
 

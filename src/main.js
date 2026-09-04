@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { WaveField } from './waves.js';
-import { Ocean, TIERS, NISL } from './ocean.js';
+import { Ocean, TIERS, NISL, WAKE } from './ocean.js';
 import { Sky } from './sky.js';
 import { World, makeAmphora } from './islands.js';
 import { Ship, Fleet } from './boats.js';
@@ -349,6 +349,29 @@ function startMode(key){
     : 'You are aboard. Something on deck should explain why.', 'dim');
 }
 
+/* ── the wake ───────────────────────────────────────────────── */
+/* A rolling record of where the hull has been, handed to the water
+   shader as foam. Sampled by distance travelled rather than by time,
+   so a drifting boat doesn't pile every sample on one spot. */
+const wakeTrack = [];
+let wakeLast = null;
+
+function updateWake(dt){
+  const src = playerShip;
+  if(!src || dt <= 0){ ocean.setWake(wakeTrack, camera.position, false); return; }
+  for(const s of wakeTrack) s.age += dt;
+  while(wakeTrack.length && wakeTrack[0].age > 11) wakeTrack.shift();
+
+  const speed = src.speed || 0;
+  if(!wakeLast || Math.hypot(src.pos.x-wakeLast.x, src.pos.z-wakeLast.z) > 2.2){
+    wakeLast = { x:src.pos.x, z:src.pos.z };
+    wakeTrack.push({ x:src.pos.x, z:src.pos.z, age:0,
+                     strength: THREE.MathUtils.clamp(speed/3.2, 0, 1) });
+    while(wakeTrack.length > WAKE) wakeTrack.shift();
+  }
+  ocean.setWake(wakeTrack, src.pos, gov.q >= 4 && speed > 0.4);
+}
+
 /* ── the chart ──────────────────────────────────────────────── */
 const chartEl = document.getElementById('chart');
 const chart = new Chart(document.getElementById('chart-canvas'));
@@ -597,6 +620,7 @@ function frame(){
     playerShip.lamp.intensity = 38*on;
     playerShip.lantern.material.emissiveIntensity = 2.6*on;
   }
+  updateWake(simDt);
   ocean.update(camera, post.h || innerHeight);
 
   /* ── survival & quest ───────────────────────────────────── */
