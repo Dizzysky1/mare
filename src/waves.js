@@ -20,6 +20,16 @@ function mulberry32(a){
   };
 }
 
+/* JONSWAP spectral density, unnormalised (the overall scale — usually written
+   αg²/ω⁵ — cancels out once we rescale the whole spectrum to hit a target Hs,
+   so it is left out here). `gamma` is the standard peak-enhancement factor. */
+const JONSWAP_GAMMA = 3.3;
+function jonswapShape(w, wp){
+  const sigma = w <= wp ? 0.07 : 0.09;
+  const r = Math.exp(-((w-wp)*(w-wp))/(2*sigma*sigma*wp*wp));
+  return Math.pow(w,-5)*Math.exp(-1.25*Math.pow(wp/w,4))*Math.pow(JONSWAP_GAMMA, r);
+}
+
 export class WaveField {
   constructor(count = 24){
     // The shader is compiled once for this capacity. Lower quality tiers use
@@ -33,37 +43,77 @@ export class WaveField {
     this.configure({ swell: 1.0, windDeg: 38 });
   }
 
-  /* swell = rough half-height of the sea in metres, chop = 0..1.4 */
+  /* `swell` is significant wave height Hs in metres, the standard measure
+     (mean height of the highest third of waves; four times the standard
+     deviation of the surface). A calm Mediterranean day is Hs 0.5-1m, a
+     genuine storm is Hs 5-7m — the mode presets in main.js (0.78 .. 3.9)
+     sit at the calm-to-rough end of that scale, which reads right in the
+     game's compressed sense of distance. `chop` is still 0..1.4, a Q-scale
+     knob independent of wave height. */
   configure({ swell = 1.0, windDeg = 38, chop = 1.05, longest = 92,
               count = this.activeCount } = {}){
     const rng = mulberry32(9137);
     const NW = THREE.MathUtils.clamp(Math.floor(count || this.count), 2, this.count);
     this.activeCount = NW;
+    const Hs = Math.max(0.05, swell);
     this.swell = swell; this.chop = chop; this.windDeg = windDeg;
     const wind = windDeg*Math.PI/180;
     this.windDir.set(Math.cos(wind), Math.sin(wind));
     this.waves.length = 0;
 
-    // geometric wavelength ladder from long swell down to 20cm chop
+    // Component wavelengths come from the dispersion relation, not the other
+    // way around: pick a frequency band from the wavelength limits, then walk
+    // it geometrically (equal spacing in ln ω) from long to short.
     const shortest = 0.55;
-    const ratio = Math.pow(shortest/longest, 1/(NW-1));
-    const raw = [], lens = [];
+    const omegaLong  = Math.sqrt(G*2*Math.PI/longest);
+    const omegaShort = Math.sqrt(G*2*Math.PI/shortest);
+
+    // JONSWAP peak frequency, backed out from Hs via the Pierson-Moskowitz
+    // fully-developed-sea relation (Hs = 0.21 U²/g, ωp = 0.877 g/U) so a
+    // bigger sea automatically pushes energy toward longer waves without a
+    // separate wind-speed input. Clamped into the sampled band: a real storm's
+    // peak would sit past `longest`, at which point the spectrum is simply
+    // still climbing at our long-wave cutoff, which is the right look anyway.
+    const windEst = Math.sqrt(Hs*G/0.21);
+    const omegaP = THREE.MathUtils.clamp(0.877*G/windEst, omegaLong*1.02, omegaShort*0.6);
+
+    const ratio = Math.pow(omegaShort/omegaLong, 1/NW);
+    const omegas = [], dOmegas = [], shapes = [];
+    let m0raw = 0;
     for(let i = 0; i < NW; i++){
-      const L = longest*Math.pow(ratio, i)*(0.88 + rng()*0.26);
-      lens.push(L);
-      raw.push(Math.pow(L/longest, 0.88));      // energy falls off with wavelength
+      const wLo = omegaLong*Math.pow(ratio, i);
+      const wHi = wLo*ratio;
+      const w = Math.sqrt(wLo*wHi);          // geometric-mean frequency of the band
+      const dw = wHi - wLo;
+      const S = jonswapShape(w, omegaP);
+      omegas.push(w); dOmegas.push(dw); shapes.push(S);
+      m0raw += S*dw;
     }
-    const norm = swell/raw.reduce((a,b)=>a+b, 0);
+    // Rescale the (arbitrarily-scaled) JONSWAP shape so 4·sqrt(m0) really is Hs,
+    // regardless of gamma/peak choices above — this is what makes `swell` a
+    // physical quantity instead of a tuning knob.
+    const targetM0 = (Hs*0.25)*(Hs*0.25);
+    const scale = m0raw > 1e-12 ? targetM0/m0raw : 0;
+
+    // spreading exponent for the cos^(2s) fan: long components track the wind
+    // closely (large s, narrow fan), short chop scatters much wider (small s)
+    const SPREAD_LONG = 18, SPREAD_SHORT = 3;
 
     for(let i = 0; i < NW; i++){
-      const L = lens[i];
-      const k = 2*Math.PI/L;
-      // directional spreading: long swell runs true with the wind, short chop fans out
-      const spread = (rng()*2-1)*(Math.PI*0.48)*(0.14 + 0.86*(i/(NW-1)));
-      const ang = wind + spread;
-      let amp = raw[i]*norm;
-      amp = Math.min(amp, 0.42/k);              // never let a single wave loop over itself
-      const w = Math.sqrt(G*k);
+      const w = omegas[i];
+      const k = w*w/G;                       // invert ω² = gk
+      let amp = Math.sqrt(Math.max(0, 2*scale*shapes[i]*dOmegas[i]));  // a = sqrt(2·S·Δω)
+
+      // rejection-sample the wind-relative angle from a cos^(2s)(Δθ/2) lobe
+      const sExp = THREE.MathUtils.lerp(SPREAD_LONG, SPREAD_SHORT, i/Math.max(1,NW-1));
+      let dtheta = 0;
+      for(let tries = 0; tries < 32; tries++){
+        const cand = (rng()*2-1)*Math.PI;
+        if(rng() <= Math.pow(Math.cos(cand*0.5), 2*sExp)){ dtheta = cand; break; }
+      }
+      const ang = wind + dtheta;
+
+      amp = Math.min(amp, 0.42/k);           // never let a single wave loop over itself
       const Q = Math.min(chop/(k*amp*NW), 1.0);
       this.waves.push({ dx:Math.cos(ang), dz:Math.sin(ang), amp, k, w, Q, phase: rng()*Math.PI*2 });
     }
