@@ -37,21 +37,27 @@ export class Survival {
     let msg = null;
 
     this.food = Math.max(0, this.food - d*0.078*(ctx.exerting ? 1.7 : 1));
-    this.water = Math.max(0, this.water - d*0.118*(ctx.hot ? 1.35 : 1)*(ctx.exerting ? 1.5 : 1));
+    this.water = Math.max(0, this.water - d*0.100*(ctx.hot ? 1.35 : 1)*(ctx.exerting ? 1.5 : 1));
     this.vitamin = Math.max(0, this.vitamin - d*0.030);
 
-    // sanity: the sea takes it, land and company give it back
+    // sanity: the sea takes it, land and company give it back. Weighted so
+    // that even the worst combination (storm, night, alone, on Insane's 2x
+    // decay) takes on the order of twenty minutes to empty from full — long
+    // enough to survive the longest sailing leg between islands, so a bad
+    // stretch of weather is a real threat but not an automatic death by
+    // itself. See islands.js for island spacing and the balance notes this
+    // was checked against.
     let s = 0;
     s -= ctx.night ? 0.9 : 0;
-    s -= ctx.storm*1.5;
-    s -= ctx.alone ? 0.55 : 0;
-    s -= (this.food < 25 || this.water < 25) ? 0.7 : 0;
-    s += ctx.landNear ? 1.5 : 0;
-    s += ctx.daylight ? 0.85 : 0;
-    s += ctx.boatNear ? 0.9 : 0;
+    s -= ctx.storm*1.2;
+    s -= ctx.alone ? 0.4 : 0;
+    s -= (this.food < 25 || this.water < 25) ? 0.5 : 0;
+    s += ctx.landNear ? 1.6 : 0;
+    s += ctx.daylight ? 0.9 : 0;
+    s += ctx.boatNear ? 1.0 : 0;
     s += ctx.gullNear ? 0.35 : 0;
-    s += ctx.ashore ? 1.2 : 0;
-    this.sanity = THREE.MathUtils.clamp(this.sanity + s*d*0.10, 0, 100);
+    s += ctx.ashore ? 1.3 : 0;
+    this.sanity = THREE.MathUtils.clamp(this.sanity + s*d*0.018, 0, 100);
 
     // damage
     let dmg = 0;
@@ -147,25 +153,56 @@ export class Quest {
     this.text = 'Something aboard should say why you sailed. Look around the deck.';
   }
 
-  /* scatter jars over the non-goal islands */
+  /* scatter jars over the non-goal islands. Positions are re-rolled every
+     run (Math.random(), not the world's seeded rng), so a height check
+     alone is not enough — the same roll that clears the height band can
+     still land on a cliff face steeper than the player can stand on
+     (player.js pushes you back down slopes where normal.y < 0.62). Require
+     a safely climbable normal too, with margin, and simply skip a jar
+     rather than ever place one somewhere it cannot be reached on foot. */
   placeAmphorae(scene, makeAmphora, count){
     const pool = this.world.islands.filter(i => !i.hasLight);
+    const CLIMBABLE = 0.70;
     for(const isl of pool){
       const n = 1 + (Math.random() < 0.4 ? 1 : 0);
       for(let j = 0; j < n; j++){
-        let x, z, h, tries = 0;
+        let x, z, h, ok = false, tries = 0;
         do {
           const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*isl.radius*0.9;
           x = isl.pos.x + Math.cos(a)*r; z = isl.pos.z + Math.sin(a)*r;
           h = isl.height(x,z);
-        } while(++tries < 60 && (h < 1.0 || h > isl.peak*0.75));
-        if(h < 1.0) continue;
+          ok = h >= 1.0 && h <= isl.peak*0.75 && isl.normalAt(x,z,0.9).y >= CLIMBABLE;
+        } while(++tries < 80 && !ok);
+        if(!ok) continue;
         const m = makeAmphora();
         m.position.set(x, h + 0.05, z);
         m.rotation.set((Math.random()-0.5)*0.4, Math.random()*6, (Math.random()-0.5)*0.4);
         scene.add(m);
         this.amphorae.push({ mesh:m, taken:false, pos:m.position.clone(), island:isl });
       }
+    }
+    // Belt and braces: with 12+ islands this should never come up, but if an
+    // unlucky run leaves fewer jars than the quest needs, the light would be
+    // unreachable through no fault of the player. Fall back to the flattest
+    // spot found on any remaining island rather than leave the run unwinnable.
+    let guard = 0;
+    while(this.amphorae.length < count && guard++ < 40){
+      const isl = pool[Math.floor(Math.random()*pool.length)];
+      let best = null, bestNy = -1;
+      for(let i = 0; i < 40; i++){
+        const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*isl.radius*0.9;
+        const x = isl.pos.x + Math.cos(a)*r, z = isl.pos.z + Math.sin(a)*r;
+        const h = isl.height(x,z);
+        if(h < 1.0 || h > isl.peak*0.9) continue;
+        const ny = isl.normalAt(x,z,0.9).y;
+        if(ny > bestNy){ bestNy = ny; best = {x,z,h}; }
+      }
+      if(!best || bestNy < CLIMBABLE) continue;
+      const m = makeAmphora();
+      m.position.set(best.x, best.h + 0.05, best.z);
+      m.rotation.set((Math.random()-0.5)*0.4, Math.random()*6, (Math.random()-0.5)*0.4);
+      scene.add(m);
+      this.amphorae.push({ mesh:m, taken:false, pos:m.position.clone(), island:isl });
     }
   }
 
