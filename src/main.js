@@ -689,4 +689,6 @@ frame();
 window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get player(){return player;}, get ship(){return playerShip;},
   get fleet(){return fleet;}, get world(){return world;},
-  get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;} };
+  get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
+  get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;},
+  get hour(){return hour;}, set hour(v){hour = v;} };
