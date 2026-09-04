@@ -16,7 +16,9 @@
   <div>
     <button data-view="side">side</button>
     <button data-view="top">top</button>
-    <button data-view="front">front</button>
+    <button data-view="front">nose</button>
+    <button data-view="rear">rear</button>
+    <button data-view="tail">tail close</button>
     <button data-view="threeq">3/4</button>
     <button data-view="orbit">orbit</button>
   </div>
@@ -32,7 +34,7 @@
 <canvas id="view"></canvas>
 <script type="module">
 import * as THREE from 'three';
-import { buildF18 } from './f18.js';
+import { buildF18 } from './f18.js?v=3';
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
@@ -68,7 +70,13 @@ scene.add(ground);
 const jet = buildF18({ scale: 1 });
 scene.add(jet.group);
 window._three = { scene, camera, jet, renderer };
-document.getElementById('info').textContent = `F/A-18 built — length ${jet.length.toFixed(1)}m, span ${jet.span.toFixed(1)}m, pylons ${jet.pylons.length}`;
+let triangles = 0;
+jet.group.traverse(o => {
+  if(!o.isMesh) return;
+  const g = o.geometry;
+  triangles += g.index ? g.index.count/3 : g.attributes.position.count/3;
+});
+document.getElementById('info').textContent = `F/A-18 built — length ${jet.length.toFixed(1)}m, span ${jet.span.toFixed(1)}m, pylons ${jet.pylons.length}, ${triangles} tris`;
 
 // mark pylon anchors so they're checkable in screenshots
 const markerGeo = new THREE.SphereGeometry(0.12, 8, 6);
@@ -83,7 +91,9 @@ let t = 0;
 const views = {
   side:   () => { camera.position.set(22, 1, 0); camera.lookAt(0,0,0); },
   top:    () => { camera.position.set(0, 22, 0.01); camera.lookAt(0,0,0); },
-  front:  () => { camera.position.set(0, 1, -20); camera.lookAt(0,0,0); },
+  front:  () => { camera.position.set(0, 1, 20); camera.lookAt(0,0,0); },
+  rear:   () => { camera.position.set(0, 1, -20); camera.lookAt(0,0,0); },
+  tail:   () => { camera.position.set(5.5, 3.2, -14); camera.lookAt(0,0.4,-5.8); },
   threeq: () => { camera.position.set(14, 7, 14); camera.lookAt(0,0,0); },
 };
 views.threeq();

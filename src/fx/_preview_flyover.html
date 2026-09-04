@@ -24,7 +24,36 @@
 </div>
 <script type="module">
 import * as THREE from 'three';
-import { Flyover } from './flyover.js';
+
+let Flyover;
+try {
+  if(new URLSearchParams(location.search).has('placeholder')) throw new Error('forced preview fallback');
+  ({ Flyover } = await import('./flyover.js'));
+} catch(error) {
+  // Keep this isolated preview usable if f18.js is temporarily absent while
+  // another contributor is building it. The production module stays strict.
+  const fallbackSource = `
+    import * as THREE from 'three';
+    export function buildF18(){
+      const group = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({color:0x343a40});
+      group.add(new THREE.Mesh(new THREE.BoxGeometry(1.5,1,15),mat));
+      group.add(new THREE.Mesh(new THREE.BoxGeometry(11,0.25,3),mat));
+      const pylons = [-4,-2,2,4].map(x => {
+        const p = new THREE.Object3D(); p.position.set(x,-0.7,0); group.add(p); return p;
+      });
+      return {group,pylons,length:15,span:11,setBurner(){},setSurfaces(){},
+        dispose(){ group.traverse(o => o.geometry?.dispose?.()); mat.dispose(); }};
+    }
+  `;
+  const f18Url = URL.createObjectURL(new Blob([fallbackSource], { type:'text/javascript' }));
+  const source = await (await fetch('./flyover.js')).text();
+  const patched = source.replace("from './f18.js'", `from '${f18Url}'`);
+  const flyoverUrl = URL.createObjectURL(new Blob([patched], { type:'text/javascript' }));
+  ({ Flyover } = await import(flyoverUrl));
+  URL.revokeObjectURL(flyoverUrl); URL.revokeObjectURL(f18Url);
+  console.warn('f18.js unavailable; using the preview-only box aircraft', error);
+}
 
 const hud = document.getElementById('hud');
 const lines = [];
@@ -87,6 +116,71 @@ function makeStore(){
 
 const flyover = new Flyover(scene, { audio, makeStore });
 
+// Deterministic, off-screen contract test. It advances the Flyover and every
+// released bomb at the same fixed timestep, using the orchestrator's two exact
+// integration statements, so a browser test does not depend on tab throttling.
+function runNumericalProof(){
+  const proofScene = new THREE.Scene();
+  const proof = new Flyover(proofScene, { makeStore });
+  const dt = 1 / 60;
+  const bombs = [];
+  const misses = [];
+  const releases = [];
+  let passCount = 0, surfaceCalls = 0, finite = true, sawEgress = false;
+  let burnerPeak = 0, maxAway = 0, maxAltitude = 0, maxBank = 0, maxPitch = 0;
+
+  const setBurner = proof.craft.setBurner.bind(proof.craft);
+  proof.craft.setBurner = v => { burnerPeak = Math.max(burnerPeak, v); setBurner(v); };
+  const setSurfaces = proof.craft.setSurfaces.bind(proof.craft);
+  proof.craft.setSurfaces = values => { surfaceCalls++; setSurfaces(values); };
+  proof.onPass = () => { passCount++; };
+  proof.onRelease = (pos, vel, index) => {
+    releases.push({ index, y: pos.y, speed: vel.length(), vy: vel.y,
+      storeDetached: !proof.stores[index]?.attached });
+    bombs.push({ pos: pos.clone(), vel: vel.clone(), index,
+      planned: proof.plannedImpacts[index].clone() });
+  };
+
+  proof.start({ target: TARGET, count: 3, spacing: 45, heading: 0, altitude: 500, speed: 250 });
+  const storesAtStart = proof.stores.filter(s => s.attached && s.obj.visible).length;
+  for(let frame = 0; frame < 60 * 55; frame++){
+    proof.update(dt, camera.position);
+    if(proof.run){
+      sawEgress ||= proof.run.phase === 'egress';
+      maxAway = Math.max(maxAway, Math.hypot(proof.run.pos.x, proof.run.pos.z));
+      maxAltitude = Math.max(maxAltitude, proof.run.pos.y);
+      maxBank = Math.max(maxBank, Math.abs(proof.run.bank));
+      maxPitch = Math.max(maxPitch, Math.abs(proof.run.pitch));
+      finite &&= Number.isFinite(proof.run.pos.x + proof.run.pos.y + proof.run.pos.z);
+    }
+    for(let i = bombs.length - 1; i >= 0; i--){
+      const b = bombs[i];
+      b.vel.y -= G * dt;
+      b.pos.addScaledVector(b.vel, dt);
+      finite &&= Number.isFinite(b.pos.x + b.pos.y + b.pos.z);
+      if(b.pos.y <= 0){
+        misses[b.index] = Math.hypot(b.pos.x - b.planned.x, b.pos.z - b.planned.z);
+        bombs.splice(i, 1);
+      }
+    }
+  }
+
+  const report = {
+    dt, misses, releases, passCount, storesAtStart,
+    storesAfterRelease: proof.stores.filter(s => s.attached).length,
+    sawEgress, burnerPeak, surfaceCalls, finite,
+    maxAway, maxAltitude, maxBank, maxPitch, despawned: !proof.active,
+  };
+  window.__flyoverProof = report;
+  log(`PROOF miss distances: ${misses.map(m => `${m.toFixed(3)}m`).join(', ')}`);
+  log(`PROOF pass=${passCount} stores=${storesAtStart}->${report.storesAfterRelease} `
+    + `egress=${sawEgress} burner=${burnerPeak} despawn=${report.despawned} finite=${finite}`);
+  log(`PROOF bank=${THREE.MathUtils.radToDeg(maxBank).toFixed(1)}° `
+    + `climb=${THREE.MathUtils.radToDeg(maxPitch).toFixed(1)}° surfaces=${surfaceCalls}`);
+  proof.dispose();
+  return report;
+}
+
 // ── ballistics proof: integrate every released bomb with the EXACT
 // orchestrator model (no drag) and measure the landing miss distance ──
 const G = 9.81;
@@ -146,10 +240,13 @@ function frame(now){
     }
   }
 
+  if(flyover.active && flyover.craft?.group.visible) camera.lookAt(flyover.craft.group.position);
+  else camera.lookAt(TARGET.x, 80, TARGET.z - 500);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+runNumericalProof();
 log('ready — click "Start strike"');
 </script>
 </body>

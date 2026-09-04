@@ -15,10 +15,12 @@ import * as THREE from 'three';
 export const KINDS = ['mk82', 'mk83', 'gbu12'];
 
 const SPEC = {
-  mk82:  { length:2.20, calibre:0.27, bodyColor:0x4a4f42, bandColor:0x9a9d8c, stripeColor:0xb99a2e, finScale:1.00 },
-  mk83:  { length:3.00, calibre:0.36, bodyColor:0x3c4148, bandColor:0x83877c, stripeColor:0xb99a2e, finScale:1.05 },
-  gbu12: { length:3.30, calibre:0.27, bodyColor:0x3c4148, bandColor:0x83877c, stripeColor:0xb99a2e, finScale:1.30, seeker:true, wings:true },
+  mk82:  { length:2.20, calibre:0.27, bodyColor:0x41483a, bandColor:0x737866, stripeColor:0xaa8c2c, finScale:1.00 },
+  mk83:  { length:3.00, calibre:0.36, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.05 },
+  gbu12: { length:3.30, calibre:0.27, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.30, seeker:true, wings:true },
 };
+
+function kindName(kind){ return SPEC[kind] ? kind : 'mk83'; }
 
 /* Tangent-ogive nose profile — the classic low-drag bomb-nose curve.
    x is measured back from the tip over 0..L; R is the body radius. */
@@ -38,7 +40,7 @@ function dims(spec){
   const bodyLen = spec.length - adapterLen;       // nose + cylinder + boat-tail
   const cylLen = Math.max(spec.calibre*0.25, bodyLen - noseLen - boattailLen);
   return {
-    R, tailR, noseLen, boattailLen, cylLen, adapterLen, bodyLen,
+    calibre:spec.calibre, R, tailR, noseLen, boattailLen, cylLen, adapterLen, bodyLen,
     finSpan: spec.calibre*0.95*spec.finScale,
     finChord: spec.calibre*0.85*spec.finScale,
     finThick: Math.max(0.012, spec.calibre*0.035),
@@ -54,10 +56,10 @@ function toAxial(geo){ geo.rotateX(Math.PI/2); return geo; }
 
 function noseGeometry(d, comZ){
   const baseZ = d.bodyLen - d.noseLen;
-  const SEGS = 7;
+  // Closely spaced rings keep the two ID bands crisp without a texture.
+  const rings = [0, .12, .18, .24, .25, .29, .30, .50, .72, .88, 1];
   const pts = [];
-  for(let i = 0; i <= SEGS; i++){
-    const t = i/SEGS;
+  for(const t of rings){
     const xFromTip = d.noseLen*(1-t);
     const r = t >= 1 ? d.tipR : Math.max(d.tipR, ogiveRadius(xFromTip, d.noseLen, d.R));
     pts.push(new THREE.Vector2(r, baseZ + d.noseLen*t));
@@ -98,19 +100,19 @@ function seekerGeometry(d, comZ){
   return g;
 }
 
-/* Per-vertex colour on the nose: body colour fading into a lighter
-   tip band, with a thin worn-yellow live-ordnance stripe cut in. */
+/* Explicit profile rings make the identification bands readable while
+   leaving the ogive itself dark instead of bleaching its whole tip. */
 function colourNose(geo, d, comZ, bodyColor, bandColor, stripeColor){
   const pos = geo.attributes.position;
   const col = new Float32Array(pos.count*3);
   const cB = new THREE.Color(bodyColor), cN = new THREE.Color(bandColor), cS = new THREE.Color(stripeColor), c = new THREE.Color();
   const baseZ = d.bodyLen - d.noseLen - comZ, tipZ = d.bodyLen - comZ;
-  const stripeZ = baseZ + (tipZ-baseZ)*0.34, halfW = d.noseLen*0.03;
   for(let i = 0; i < pos.count; i++){
     const z = pos.getZ(i);
     const t = THREE.MathUtils.clamp((z-baseZ)/(tipZ-baseZ), 0, 1);
-    c.copy(cB).lerp(cN, Math.pow(t, 0.7));
-    if(Math.abs(z-stripeZ) < halfW) c.copy(cS);
+    c.copy(cB).lerp(cN, 0.06 + t*0.10);
+    if(t >= .12 && t <= .18) c.copy(cB).lerp(cN, 0.62);
+    else if(t >= .25 && t <= .29) c.copy(cS);
     col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -134,9 +136,10 @@ function colourBody(geo, bodyColor){
 /* ── shared per-kind geometry/material kit, built once ─────────── */
 const _kits = new Map();
 function getKit(kind){
+  kind = kindName(kind);
   let kit = _kits.get(kind);
   if(kit) return kit;
-  const spec = SPEC[kind] || SPEC.mk82;
+  const spec = SPEC[kind];
   const d = dims(spec);
   const comZ = d.bodyLen - 0.42*spec.length;      // CoM forward of geometric centre — filled nose, light fins
 
@@ -160,7 +163,7 @@ function getKit(kind){
     spec, d, comZ,
     noseGeo, bodyGeo, adapterGeo, finGeo, lugGeo, wingGeo, seekerGeo,
     noseMat, bodyMat, tailMat, lugMat, seekerMat,
-    finMountR: d.tailR*0.90, finMountZ: -d.adapterLen*0.90 - comZ,
+    finMountR: d.tailR*0.90, finMountZ: -d.adapterLen*0.05 - comZ,
     wingMountR: d.R, wingMountZ: d.boattailLen + d.cylLen*0.42 - comZ,
     lugZ: [d.boattailLen + d.cylLen*0.30 - comZ, d.boattailLen + d.cylLen*0.66 - comZ],
   };
@@ -182,12 +185,14 @@ function addFinSet(group, geo, mat, mountR, mountZ, n, out){
     blade.castShadow = true;
     pivot.add(blade);
     group.add(pivot);
-    out.pivots.push(pivot); out.base.push(theta); out.sign.push(i%2 ? -1 : 1);
+    // One rotation sense preserves the radial spacing while the blades wrap.
+    out.pivots.push(pivot); out.base.push(theta); out.sign.push(1);
   }
 }
 
 /* ── the detailed, animatable store ────────────────────────────── */
 export function buildBomb(kind = 'mk83'){
+  kind = kindName(kind);
   const kit = getKit(kind);
   const { d } = kit;
   const g = new THREE.Group();
@@ -289,6 +294,7 @@ const POOL_MAT = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0
    every pylon) so it's one draw call: fins baked deployed, one shared
    material across every kind. */
 export function bombAssets(kind = 'mk83'){
+  kind = kindName(kind);
   const kit = getKit(kind);
   let geo = _assetGeo.get(kind);
   if(!geo){
@@ -317,6 +323,8 @@ export function bombAssets(kind = 'mk83'){
     if(kit.seekerGeo) parts.push({ geo:kit.seekerGeo, color:0x14161a });
 
     geo = mergeGeoms(parts);
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
     for(const t of temps) t.dispose();
     _assetGeo.set(kind, geo);
   }

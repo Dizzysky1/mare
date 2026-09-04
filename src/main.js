@@ -667,4 +667,5 @@ frame();
 // expose a little for tinkering from the console
 window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get player(){return player;}, get ship(){return playerShip;},
-  get fleet(){return fleet;}, get world(){return world;} };
+  get fleet(){return fleet;}, get world(){return world;},
+  get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;} };

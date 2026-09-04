@@ -139,8 +139,11 @@ const FIN_MOUNT = { x:0.62, y:0.42, z:-5.0 };
 const FIN_CANT = THREE.MathUtils.degToRad(20);
 const FIN_OUTLINE = [[1.0,0.0],[-0.6,2.3],[-1.2,2.3],[-2.0,0.0]];
 const FIN_THICK = 0.12;
-const RUDDER_HINGE_Z = -1.6;
-const RUDDER_OUTLINE = [[0,0],[0,2.3],[-0.5,2.3],[-0.5,0]];
+// inset in the fin at neutral so the movable panel cannot add a false
+// second peak to the tail silhouette. The hinge itself is swept, but a
+// centreline yaw pivot is close enough at this viewing scale.
+const RUDDER_HINGE_Z = -1.25;
+const RUDDER_OUTLINE = [[-0.35,0.15],[0.37,2.15],[0.10,2.15],[-0.67,0.15]];
 const RUDDER_THICK = 0.05;
 
 const NACELLE_X = 0.62, NACELLE_Y = -0.05;
@@ -156,7 +159,7 @@ const G_STAB = panelGeometry(STAB_OUTLINE, STAB_THICK);
 const G_FIN = finGeometry(FIN_OUTLINE, FIN_THICK);
 const G_RUDDER = finGeometry(RUDDER_OUTLINE, RUDDER_THICK);
 const G_INTAKE = new THREE.BoxGeometry(0.34, 0.42, 0.95);
-const G_CANOPY = new THREE.SphereGeometry(0.60, 14, 10, 0, Math.PI*2, 0, Math.PI*0.62);
+const G_CANOPY = new THREE.SphereGeometry(0.60, 14, 10, 0, Math.PI*2, 0, Math.PI*0.52);
 const G_NACELLE = new THREE.CylinderGeometry(0.40, 0.52, NACELLE_Z0-NACELLE_Z1, 12, 1, true);
 G_NACELLE.rotateX(Math.PI/2);
 G_NACELLE.translate(0, 0, (NACELLE_Z0+NACELLE_Z1)/2);
@@ -203,7 +206,8 @@ export function buildF18(opts = {}){
   };
 
   add(G_FUSELAGE, M_FUSELAGE);
-  add(G_CANOPY, M_CANOPY, 0, 0.55, 4.15);
+  const canopy = add(G_CANOPY, M_CANOPY, 0, 0.50, 4.15);
+  canopy.scale.set(0.82, 1.05, 1.80);
 
   // intakes, one each side, tucked under the LERX root
   const intakeR = add(G_INTAKE, M_PANEL, 0.78, -0.05, 2.55);
@@ -273,9 +277,10 @@ export function buildF18(opts = {}){
 
   // pylons: fixed visual stub + an anchor tip for other code to hang ordnance off
   const pylons = [];
-  const HARDPOINTS = [5.9, 4.2, 2.4];
+  const HARDPOINTS = [4.85, 3.55, 2.10];
   const addPylon = (x) => {
-    const le = wingLE(x), te = wingTE(x);
+    const wingX = Math.abs(x);
+    const le = wingLE(wingX), te = wingTE(wingX);
     const z = le - 0.35*(le-te);
     const topY = WING_Y - WING_THICK*0.5;
     add(G_PYLON, M_PANEL, x, topY-0.20, z);
@@ -284,7 +289,7 @@ export function buildF18(opts = {}){
     group.add(anchor);
     return anchor;
   };
-  const left = HARDPOINTS.slice().reverse().map(x => addPylon(-x));
+  const left = HARDPOINTS.map(x => addPylon(-x));
   const right = HARDPOINTS.map(x => addPylon(x));
   pylons.push(...left, ...right);
 
