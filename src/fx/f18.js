@@ -15,40 +15,50 @@ const SPAN = 12.3;
 
 /* ── fuselage loft ──────────────────────────────────────────────
    station table: t (-1 tail … 1 nose), half-width, height above and
-   below the centreline. Radome tapers to a point, tail pinches down
-   to the slim boat-tail between the two nacelles. */
+   below the centreline, and a centreline droop (cy) used to bend the
+   radome down toward the tip. Depth (hTop+hBot) peaks at ~1.5-1.6m
+   through the intake/wing-box station — a Hornet fuselage is a deep,
+   near-square box there, not a flat slab — then the radome tapers to
+   a drooped point and the tail pinches to the slim boat-tail between
+   the two nacelles. */
 const FUS_STATIONS = [
-  [-1.00, 0.20, 0.20, 0.18],
-  [-0.82, 0.34, 0.32, 0.26],
-  [-0.55, 0.60, 0.46, 0.36],
-  [-0.20, 0.88, 0.58, 0.44],
-  [ 0.05, 1.00, 0.60, 0.46],
-  [ 0.30, 0.94, 0.60, 0.42],
-  [ 0.50, 0.74, 0.56, 0.36],
-  [ 0.68, 0.54, 0.50, 0.30],
-  [ 0.84, 0.30, 0.30, 0.22],
-  [ 1.00, 0.02, 0.02, 0.02],
+  [-1.00, 0.14, 0.16, 0.14,  0   ],
+  [-0.85, 0.26, 0.28, 0.22,  0   ],
+  [-0.60, 0.48, 0.46, 0.36,  0   ],
+  [-0.35, 0.66, 0.62, 0.50,  0   ],
+  [-0.12, 0.80, 0.86, 0.70,  0   ],
+  [ 0.08, 0.82, 0.90, 0.68,  0   ],
+  [ 0.28, 0.68, 0.70, 0.48, -0.01],
+  [ 0.46, 0.54, 0.56, 0.36, -0.02],
+  [ 0.64, 0.38, 0.40, 0.26, -0.04],
+  [ 0.80, 0.22, 0.22, 0.16, -0.07],
+  [ 0.92, 0.09, 0.09, 0.08, -0.10],
+  [ 1.00, 0.01, 0.01, 0.01, -0.12],
 ];
 function fuselageAt(t){
   for(let i = 1; i < FUS_STATIONS.length; i++){
     const a = FUS_STATIONS[i-1], b = FUS_STATIONS[i];
     if(t <= b[0]){
       const f = (t-a[0])/(b[0]-a[0]);
-      return { hw: THREE.MathUtils.lerp(a[1],b[1],f), hTop: THREE.MathUtils.lerp(a[2],b[2],f), hBot: THREE.MathUtils.lerp(a[3],b[3],f) };
+      return {
+        hw: THREE.MathUtils.lerp(a[1],b[1],f), hTop: THREE.MathUtils.lerp(a[2],b[2],f),
+        hBot: THREE.MathUtils.lerp(a[3],b[3],f), cy: THREE.MathUtils.lerp(a[4],b[4],f),
+      };
     }
   }
   const l = FUS_STATIONS[FUS_STATIONS.length-1];
-  return { hw:l[1], hTop:l[2], hBot:l[3] };
+  return { hw:l[1], hTop:l[2], hBot:l[3], cy:l[4] };
 }
-function fusPoint(a, hw, hTop, hBot){
+function fusTopY(z){ return fuselageAt(z/HALF).hTop + fuselageAt(z/HALF).cy; }
+function fusPoint(a, hw, hTop, hBot, cy){
   const cx = Math.cos(a), sy = Math.sin(a);
   const x = hw*Math.sign(cx)*Math.pow(Math.abs(cx), 0.85);
   const hh = sy >= 0 ? hTop : hBot;
-  const y = hh*Math.sign(sy)*Math.pow(Math.abs(sy), sy >= 0 ? 0.85 : 1.3);
+  const y = hh*Math.sign(sy)*Math.pow(Math.abs(sy), sy >= 0 ? 0.85 : 1.3) + cy;
   return [x, y];
 }
 function buildFuselage(){
-  const NS = 16, NR = 14;
+  const NS = 20, NR = 16;
   const pos = [], col = [], idx = [];
   const cAir = new THREE.Color(0x6f767d), cPanel = new THREE.Color(0x5b6268), cRadome = new THREE.Color(0x4a5055);
   const c = new THREE.Color();
@@ -58,7 +68,7 @@ function buildFuselage(){
     const z = t*HALF;
     for(let j = 0; j <= NR; j++){
       const a = (j/NR)*Math.PI*2;
-      const [x, y] = fusPoint(a, st.hw, st.hTop, st.hBot);
+      const [x, y] = fusPoint(a, st.hw, st.hTop, st.hBot, st.cy);
       pos.push(x, y, z);
       c.copy(cAir);
       if(t > 0.74) c.lerp(cRadome, THREE.MathUtils.clamp((t-0.74)/0.22, 0, 1));
@@ -106,12 +116,90 @@ function panelGeometry(outline, thickness){
   return g;
 }
 function finGeometry(outline, thickness){
-  const h = thickness*0.5, pos = [];
-  for(const [z,y] of outline) pos.push(h, y, z);
-  for(const [z,y] of outline) pos.push(-h, y, z);
+  // thickness may be a scalar or a per-outline-point array so a fin can
+  // taper thinner toward the tip instead of reading as a flat slab.
+  const th = Array.isArray(thickness) ? thickness : outline.map(()=>thickness);
+  const pos = [];
+  for(let i = 0; i < outline.length; i++){ const [z,y] = outline[i]; pos.push(th[i]*0.5, y, z); }
+  for(let i = 0; i < outline.length; i++){ const [z,y] = outline[i]; pos.push(-th[i]*0.5, y, z); }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
   g.setIndex(capAndWalls(outline.length));
+  g.computeVertexNormals();
+  return g;
+}
+
+/* ── rounded-rect ↔ circle cross-section, used to loft the intake
+   ducts from a rectangular mouth into the round engine nacelle ── */
+function roundedRectXY(a, hw, hh, round){
+  const cx = Math.cos(a), sy = Math.sin(a);
+  const s = 1/Math.max(Math.abs(cx), Math.abs(sy), 1e-6);
+  const rx = cx*s*hw, ry = sy*s*hh;   // rectangle boundary
+  const ex = cx*hw, ey = sy*hh;       // ellipse boundary
+  return [THREE.MathUtils.lerp(rx,ex,round), THREE.MathUtils.lerp(ry,ey,round)];
+}
+function ductTrunkGeometry(stations, segs){
+  const pos = [], idx = [];
+  for(const st of stations)
+    for(let j = 0; j <= segs; j++){
+      const a = (j/segs)*Math.PI*2;
+      const [lx, ly] = roundedRectXY(a, st.hw, st.hh, st.round);
+      pos.push(st.x+lx, st.y+ly, st.z);
+    }
+  for(let i = 0; i < stations.length-1; i++)
+    for(let j = 0; j < segs; j++){
+      const a = i*(segs+1)+j, b = a+1, d = a+segs+1, e = d+1;
+      idx.push(a,d,b, b,d,e);
+    }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+function ductCapGeometry(st, inset, segs){
+  const pos = [st.x, st.y, st.z+inset];
+  for(let j = 0; j <= segs; j++){
+    const a = (j/segs)*Math.PI*2;
+    const [lx, ly] = roundedRectXY(a, st.hw*0.86, st.hh*0.86, st.round);
+    pos.push(st.x+lx, st.y+ly, st.z+inset);
+  }
+  const idx = [];
+  for(let i = 1; i < segs; i++) idx.push(0,i,i+1);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* ── canopy fairing: windscreen quad + a low ridge that tapers the
+   bubble canopy's spine back down into the fuselage dorsal line ── */
+function windscreenGeometry(z0, y0, hw0, z1, y1, hw1){
+  const pos = [
+    -hw0,y0,z0,  hw0,y0,z0,  hw1,y1,z1,
+    -hw0,y0,z0,  hw1,y1,z1,  -hw1,y1,z1,
+  ];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.computeVertexNormals();
+  return g;
+}
+function spineGeometry(zf, hwf, zr, hwr){
+  const yf = fusTopY(zf), yr = fusTopY(zr);
+  // a shallow ridge — its prominence above the local hull (not its
+  // absolute height) is what tapers to ~0 at the rear, since the hull
+  // itself is already climbing toward the wing-box station back there.
+  const apexF = yf + 0.10, apexR = yr + 0.02;
+  const A=[0,apexF,zf], BL=[-hwf,yf,zf], BR=[hwf,yf,zf];
+  const A2=[0,apexR,zr], BL2=[-hwr,yr,zr], BR2=[hwr,yr,zr];
+  const pos = [];
+  const tri = (p,q,r) => pos.push(...p,...q,...r);
+  tri(A,BL,BL2); tri(A,BL2,A2);      // left slope
+  tri(A,A2,BR2); tri(A,BR2,BR);      // right slope
+  tri(A,BL,BR);                       // front cap, closes the wedge
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
   g.computeVertexNormals();
   return g;
 }
@@ -138,17 +226,37 @@ const STAB_THICK = 0.16;
 const FIN_MOUNT = { x:0.62, y:0.42, z:-5.0 };
 const FIN_CANT = THREE.MathUtils.degToRad(20);
 const FIN_OUTLINE = [[1.0,0.0],[-0.6,2.3],[-1.2,2.3],[-2.0,0.0]];
-const FIN_THICK = 0.12;
+// root points (y=0) get full thickness, tip points (y=2.3) taper down —
+// paired with the outline's own chord taper this reads as a real tapered
+// fin instead of a constant-section slab.
+const FIN_THICK = [0.13, 0.05, 0.05, 0.13];
 // inset in the fin at neutral so the movable panel cannot add a false
 // second peak to the tail silhouette. The hinge itself is swept, but a
 // centreline yaw pivot is close enough at this viewing scale.
 const RUDDER_HINGE_Z = -1.25;
 const RUDDER_OUTLINE = [[-0.35,0.15],[0.37,2.15],[0.10,2.15],[-0.67,0.15]];
-const RUDDER_THICK = 0.05;
+const RUDDER_THICK = [0.06, 0.03, 0.03, 0.06];
 
 const NACELLE_X = 0.62, NACELLE_Y = -0.05;
 const NACELLE_Z0 = -1.0, NACELLE_Z1 = -8.2;
 const NOZZLE_Z = -8.55;
+
+/* intake duct: rectangular mouth under the LERX lofted back into the
+   round engine nacelle. Sweeps inboard as it goes aft, same as the
+   real duct curving from the wide-set intakes to the closer engines.
+   round: 0 = sharp rectangle, 1 = circle (matches the nacelle end). */
+const DUCT_SEGS = 12;
+const DUCT_STATIONS = [
+  { x:1.12, y:-0.08, z: 2.55, hw:0.34, hh:0.30, round:0.05 },
+  { x:1.10, y:-0.08, z: 1.40, hw:0.32, hh:0.29, round:0.20 },
+  { x:0.92, y:-0.07, z: 0.10, hw:0.30, hh:0.30, round:0.55 },
+  { x:NACELLE_X, y:NACELLE_Y, z:NACELLE_Z0, hw:0.40, hh:0.40, round:1.00 },
+];
+const DUCT_MOUTH = DUCT_STATIONS[0];
+const SPLITTER_X = 0.745, SPLITTER_Y = -0.08, SPLITTER_Z = 1.98;
+
+/* canopy fairing stations, front to back along +Z */
+const CANOPY_Z0 = 5.05, CANOPY_Z1 = 4.45, CANOPY_Z2 = 3.35, CANOPY_Z3 = 1.2;
 
 /* ── shared geometries (built once) ─────────────────────────── */
 const G_FUSELAGE = buildFuselage();
@@ -158,8 +266,13 @@ const G_AILERON = panelGeometry(AILERON_OUTLINE, AIL_THICK);
 const G_STAB = panelGeometry(STAB_OUTLINE, STAB_THICK);
 const G_FIN = finGeometry(FIN_OUTLINE, FIN_THICK);
 const G_RUDDER = finGeometry(RUDDER_OUTLINE, RUDDER_THICK);
-const G_INTAKE = new THREE.BoxGeometry(0.34, 0.42, 0.95);
-const G_CANOPY = new THREE.SphereGeometry(0.60, 14, 10, 0, Math.PI*2, 0, Math.PI*0.52);
+const G_DUCT = ductTrunkGeometry(DUCT_STATIONS, DUCT_SEGS);
+const G_DUCT_CAVITY = ductCapGeometry(DUCT_MOUTH, -0.08, DUCT_SEGS);
+const G_SPLITTER = new THREE.BoxGeometry(0.03, DUCT_MOUTH.hh*1.9, 1.15);
+const G_WINDSCREEN = windscreenGeometry(CANOPY_Z0, fusTopY(CANOPY_Z0)+0.02, 0.24, CANOPY_Z1, fusTopY(CANOPY_Z1)+0.16, 0.30);
+const G_SPINE = spineGeometry(CANOPY_Z2, 0.17, CANOPY_Z3, 0.02);
+const CANOPY_R = 0.55, CANOPY_THETA = Math.PI*0.42, CANOPY_SCALE = { x:0.56, y:0.62, z:1.55 };
+const G_CANOPY = new THREE.SphereGeometry(CANOPY_R, 14, 10, 0, Math.PI*2, 0, CANOPY_THETA);
 const G_NACELLE = new THREE.CylinderGeometry(0.40, 0.52, NACELLE_Z0-NACELLE_Z1, 12, 1, true);
 G_NACELLE.rotateX(Math.PI/2);
 G_NACELLE.translate(0, 0, (NACELLE_Z0+NACELLE_Z1)/2);
@@ -206,12 +319,31 @@ export function buildF18(opts = {}){
   };
 
   add(G_FUSELAGE, M_FUSELAGE);
-  const canopy = add(G_CANOPY, M_CANOPY, 0, 0.50, 4.15);
-  canopy.scale.set(0.82, 1.05, 1.80);
 
-  // intakes, one each side, tucked under the LERX root
-  const intakeR = add(G_INTAKE, M_PANEL, 0.78, -0.05, 2.55);
-  mirror(intakeR);
+  // canopy fairing: windscreen → bubble → spine tapering into the fuselage,
+  // rather than a dark ball dropped on top of a flat deck. The bubble's rim
+  // is a flat circle in local space (a sphere cap), so instead of chasing
+  // the hull's changing height along its footprint we just sink the rim
+  // below the lowest point of the hull under it — cheap and gap-proof,
+  // since the hull solid hides the join and only the dome shows through.
+  const canopyCenterZ = 3.9, canopyHalfLen = CANOPY_R*Math.sin(CANOPY_THETA)*CANOPY_SCALE.z;
+  const canopyMinHull = Math.min(fusTopY(canopyCenterZ-canopyHalfLen), fusTopY(canopyCenterZ), fusTopY(canopyCenterZ+canopyHalfLen));
+  const canopyRimLocalY = CANOPY_R*Math.cos(CANOPY_THETA);
+  const canopyY = (canopyMinHull-0.05) - canopyRimLocalY*CANOPY_SCALE.y;
+  const canopy = add(G_CANOPY, M_CANOPY, 0, canopyY, canopyCenterZ);
+  canopy.scale.set(CANOPY_SCALE.x, CANOPY_SCALE.y, CANOPY_SCALE.z);
+  add(G_WINDSCREEN, M_CANOPY);
+  add(G_SPINE, M_AIRFRAME);
+
+  // intakes, one each side: rectangular duct under the LERX with a dark
+  // recessed mouth, a splitter-plate standoff off the fuselage side, and
+  // a trunk that curves inboard to blend into the engine nacelle.
+  const ductR = add(G_DUCT, M_PANEL);
+  mirror(ductR);
+  const cavityR = add(G_DUCT_CAVITY, M_NOZZLE_CAVITY);
+  mirror(cavityR);
+  const splitterR = add(G_SPLITTER, M_AIRFRAME, SPLITTER_X, SPLITTER_Y, SPLITTER_Z);
+  mirror(splitterR);
 
   // LERX
   const lerxR = add(G_LERX, M_AIRFRAME, 0, LERX_Y, 0);
