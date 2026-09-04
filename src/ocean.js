@@ -7,10 +7,10 @@ export const NISL = 16;   // islands the water can shoal against
 /* Quality tiers. `ultra` is sized for a 32-core Apple GPU at native
    Retina: half a million ocean triangles and a 32-wave spectrum. */
 export const TIERS = {
-  low:   { waves:10, rings:160, sect:200, ripple:3, pr:1.00, bloom:false, shadow:0,    fbm:3, rt:0,  god:false },
-  high:  { waves:20, rings:320, sect:384, ripple:5, pr:1.50, bloom:true,  shadow:2048, fbm:5, rt:16, god:true },
-  ultra: { waves:28, rings:448, sect:512, ripple:7, pr:2.00, bloom:true,  shadow:4096, fbm:6, rt:26, god:true },
-  max:   { waves:32, rings:576, sect:640, ripple:8, pr:2.00, bloom:true,  shadow:4096, fbm:7, rt:40, god:true },
+  low:   { waves:10, rings:160, sect:200, ripple:3, pr:1.00, bloom:false, shadow:0,    samples:0, fbm:3, rt:0,  god:false },
+  high:  { waves:20, rings:320, sect:384, ripple:5, pr:1.50, bloom:true,  shadow:2048, samples:4, fbm:5, rt:16, god:true },
+  ultra: { waves:28, rings:448, sect:512, ripple:7, pr:2.00, bloom:true,  shadow:4096, samples:4, fbm:6, rt:26, god:true },
+  max:   { waves:32, rings:576, sect:640, ripple:8, pr:2.00, bloom:true,  shadow:4096, samples:8, fbm:7, rt:40, god:true },
 };
 
 /* A polar "disc" grid, re-centred on the camera every frame: dense under
@@ -315,6 +315,16 @@ export class Ocean {
     this.uniforms.uWaveA.value = p.A;
     this.uniforms.uWaveB.value = p.B;
     this.uniforms.uSeaSwell.value = this.field.swell;
+    this.uniforms.uWaveCut.value = this.field.activeCount - 1;
+  }
+
+  setTier(tier){
+    this.tier = tier;
+    const old = this.mesh.geometry;
+    this.mesh.geometry = discGeometry(tier.rings, tier.sect, this.radius);
+    this.triangles = tier.rings*tier.sect*2;
+    old.dispose();
+    this.uniforms.uRTSteps.value = tier.rt;
   }
 
   setIslands(list){

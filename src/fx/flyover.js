@@ -8,7 +8,8 @@ import { buildF18 } from './f18.js';
    exact is the handoff: onRelease fires with a position and velocity
    such that the orchestrator's own drag-free integrator
 
-       vel.y -= 9.81*dt;  pos.addScaledVector(vel, dt);
+       pos.addScaledVector(vel, dt);  pos.y -= 0.5*9.81*dt*dt;
+       vel.y -= 9.81*dt;
 
    lands the bomb on plannedImpacts[i]. That only works if the jet is
    flying dead level, at the exact release altitude and speed, with
@@ -99,7 +100,7 @@ export class Flyover {
     this.stores = [];
     if(!this.makeStore || !this.craft || !this.craft.pylons.length) return;
     for(let i = 0; i < this.craft.pylons.length; i++){
-      const obj = this.makeStore();
+      const obj = this.makeStore(i);
       obj.visible = false;
       this.stores.push({ obj, attached: false });
     }
@@ -142,7 +143,7 @@ export class Flyover {
     this.active = true;
     this.plannedImpacts = impacts;
     this.run = {
-      target: new THREE.Vector3(target.x, 0, target.z), dir, speed: s, altitude: h,
+      target: new THREE.Vector3(target.x, 0, target.z), dir, speed: s, altitude: h, fallT,
       releasePts, released: new Array(n).fill(false), releasedCount: 0,
       phase: 'inbound', pos: spawnPos, t: 0, passed: false,
       settle: THREE.MathUtils.randFloat(1.4, 2.2),      // cosmetic roll-out duration
@@ -168,6 +169,7 @@ export class Flyover {
   abort(){
     this.active = false;
     this.run = null;
+    this.plannedImpacts.length = 0;
     if(this.craft){
       this.craft.group.visible = false;
       this.craft.setBurner?.(0);
@@ -187,12 +189,9 @@ export class Flyover {
 
   dispose(){
     this.abort();
-    for(const st of this.stores){
-      st.obj.traverse?.(o => {
-        o.geometry?.dispose?.();
-        if(o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
-      });
-    }
+    // makeStore hands us externally owned/shared assets; detach but do not
+    // invalidate their module-level geometry and materials.
+    for(const st of this.stores) st.obj.parent?.remove(st.obj);
     this.stores = [];
     if(this.craft){ this.scene.remove(this.craft.group); this.craft.dispose?.(); this.craft = null; }
     this.scene.remove(this.trail);
@@ -263,7 +262,7 @@ export class Flyover {
       const relVel = this._v3.copy(run.dir).multiplyScalar(run.speed);   // level flight: zero vertical rate
       this._releaseStore(i);
       this.onRelease?.(relPos.clone(), relVel.clone(), i);
-      this.audio?.whistle?.();
+      this.audio?.whistle?.(Math.max(0, run.fallT - 3.4));
     }
 
     run.pos.addScaledVector(run.dir, stepLen);

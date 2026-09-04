@@ -148,15 +148,20 @@ export class Sky {
     this.flash = 0;
   }
 
-  enableShadows(on, renderer){
+  enableShadows(on, renderer, size = 2048){
     this.sun.castShadow = on;
-    if(!on) return;
+    renderer.shadowMap.enabled = on;
+    if(!on){ this.shadowSize = 0; return; }
     const s = this.sun.shadow;
-    s.mapSize.set(2048,2048);
+    const nextSize = Math.max(256, Math.floor(size));
+    if(this.shadowSize !== nextSize){
+      s.map?.dispose(); s.map = null;
+      s.mapSize.set(nextSize,nextSize);
+      this.shadowSize = nextSize;
+    }
     s.camera.near = 1; s.camera.far = 160;
     s.camera.left = -26; s.camera.right = 26; s.camera.top = 26; s.camera.bottom = -26;
     s.bias = -0.0012; s.normalBias = 0.05;
-    renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   }
 

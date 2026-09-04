@@ -15,10 +15,15 @@ function noiseBuffer(ctx, seconds = 4, brown = false){
 }
 
 export class Audio {
-  constructor(){ this.ready = false; this.enabled = true; }
+  constructor(){
+    this.ready = false;
+    this.enabled = true;
+    this._delayGeneration = 0;
+    this._delayTimers = new Set();
+  }
 
   start(){
-    if(this.ready || !this.enabled) return;
+    if(this.ready) return;
     const C = window.AudioContext || window.webkitAudioContext;
     if(!C) return;
     const ctx = this.ctx = new C();
@@ -72,6 +77,26 @@ export class Audio {
     this.lastCreak = 0;
   }
 
+  /* Wall-clock callbacks must not leak from one mode (or a paused game) into
+     the next. Keeping the token as well as the timer set makes cancellation
+     safe even if a callback has already been dequeued by the browser. */
+  _delay(fn, delayMs){
+    const generation = this._delayGeneration;
+    const id = setTimeout(() => {
+      this._delayTimers.delete(id);
+      if(generation !== this._delayGeneration || !this.ready || !this.enabled) return;
+      fn();
+    }, Math.max(0, delayMs));
+    this._delayTimers.add(id);
+    return id;
+  }
+
+  resetDelayed(){
+    this._delayGeneration++;
+    for(const id of this._delayTimers) clearTimeout(id);
+    this._delayTimers.clear();
+  }
+
   resume(){ if(this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
 
   fade(to, time = 1.2){
@@ -117,7 +142,7 @@ export class Audio {
     const base = 900 + Math.random()*500;
     const n = 2 + Math.floor(Math.random()*3);
     for(let i = 0; i < n; i++){
-      setTimeout(()=>{
+      this._delay(()=>{
         this.blip({ freq: base*(1+i*0.06), type:'sawtooth', dur:0.18, gain:0.035*near, sweep:0.55 });
         this.blip({ freq: base*1.5, type:'triangle', dur:0.14, gain:0.018*near, sweep:0.6 });
       }, i*(150 + Math.random()*120));
@@ -146,14 +171,15 @@ export class Audio {
     s.buffer = this.brown; s.loop = true;
     const bp = this.ctx.createBiquadFilter();
     bp.type = 'bandpass'; bp.Q.value = 0.9;
+    const passT = t + dur*0.87;
     bp.frequency.setValueAtTime(140, t);
-    bp.frequency.linearRampToValueAtTime(520, t + dur*0.5);   // doppler up on approach
+    bp.frequency.linearRampToValueAtTime(520, passT);         // doppler up through overflight
     bp.frequency.linearRampToValueAtTime(180, t + dur);       // and down as it passes
     const hp = this.ctx.createBiquadFilter();
     hp.type = 'highpass'; hp.frequency.value = 60;
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(gain, t + dur*0.52);
+    g.gain.exponentialRampToValueAtTime(gain, passT);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     s.connect(bp); bp.connect(hp); hp.connect(g); g.connect(this.dive);
     s.start(t); s.stop(t + dur + 0.1);
@@ -179,8 +205,7 @@ export class Audio {
   /* Detonation, arriving late by however long the sound took to cross. */
   explosion(near = 1, delay = 0){
     if(!this.ready) return;
-    setTimeout(() => {
-      if(!this.ready) return;
+    this._delay(() => {
       this.burst({ dur:0.5, freq:190, Q:0.4, gain:0.42*near, type:'lowpass', buffer:'brown' });
       this.burst({ dur:0.16, freq:3200, Q:0.3, gain:0.22*near });
       this.burst({ dur:2.6 + near*1.8, freq:95, Q:0.35, gain:0.30*near, type:'lowpass', buffer:'brown' });

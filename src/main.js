@@ -69,6 +69,7 @@ if(/Apple M[1-9]\s*(Pro|Max|Ultra)/i.test(gpuName) || (navigator.hardwareConcurr
 if(/Apple M[1-9]\s*(Max|Ultra)/i.test(gpuName)) tierName = 'max';
 if(/(Intel|Iris|UHD|Mali|Adreno)/i.test(gpuName)) tierName = 'low';
 let tier = TIERS[tierName];
+const maxTier = TIERS.max;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x9fb8c4, 0.00016);
@@ -76,9 +77,11 @@ const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.08, 260
 camera.position.set(0, 12, 40);
 
 const sky = new Sky(scene, camera);
-const field = new WaveField(tier.waves);
-const ocean = new Ocean(scene, field, sky.uniforms, tier);
-const post = new Post(renderer, scene, camera, tier);
+// Compile the expensive sea path once at maximum capacity. Presets still
+// change live wave count, geometry, render resolution and ray work.
+const field = new WaveField(maxTier.waves);
+const ocean = new Ocean(scene, field, sky.uniforms, maxTier);
+const post = new Post(renderer, scene, camera, maxTier);
 
 let world = null, fleet = null, gulls = null, playerShip = null, player = null;
 let quest = null, survival = null, mode = MODES.easy, strikes = null;
@@ -97,16 +100,30 @@ function applyQuality(){
   post.setSize(innerWidth, innerHeight, pr);
   renderer.toneMapping = post.enabled ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
   ocean.uniforms.uRTSteps.value = q >= 7 ? tier.rt : q >= 4 ? Math.floor(tier.rt*0.5) : 0;
-  ocean.uniforms.uWaveCut.value = q >= 5 ? field.count : Math.max(9, Math.floor(field.count*0.55));
+  const activeWaves = field.activeCount || field.waves.length;
+  ocean.uniforms.uWaveCut.value = (q >= 5 ? activeWaves : Math.max(6, Math.floor(activeWaves*0.55))) - 1;
   ocean.uniforms.uDetail.value = q >= 3 ? 1 : 0.35;
   post.god = tier.god && q >= 6;
   gov.rays = q >= 8 ? 36 : 22;
   const wantShadow = tier.shadow > 0 && q >= 4;
-  if(renderer.shadowMap.enabled !== wantShadow){
-    renderer.shadowMap.enabled = wantShadow;
-    sky.sun.castShadow = wantShadow;
+  const shadowSize = wantShadow ? tier.shadow : 0;
+  if(renderer.shadowMap.enabled !== wantShadow || sky.shadowSize !== shadowSize){
+    sky.enableShadows(wantShadow, renderer, shadowSize || 2048);
     scene.traverse(o=>{ if(o.isMesh) o.material && (o.material.needsUpdate = true); });
   }
+}
+
+function setQualityTier(name, refreshSea = true){
+  tierName = TIERS[name] ? name : 'high';
+  tier = TIERS[tierName];
+  ocean.setTier(tier);
+  post.setQuality(tier, renderer.capabilities.maxSamples);
+  if(refreshSea){
+    field.configure({ swell:mode.swell, windDeg:mode.windDeg, chop:mode.chop, count:tier.waves });
+    ocean.syncSpectrum();
+  }
+  gov.q = 10; gov.cooldown = 2.5;
+  applyQuality();
 }
 function governor(dt){
   gov.acc += dt; gov.frames++;
@@ -215,7 +232,9 @@ async function boot(){
   ui.el.loading.classList.add('hidden');
   ui.el.menu.classList.remove('hidden');
   state = 'menu';
-  applyQuality();
+  const qualityEl = document.getElementById('opt-quality');
+  qualityEl.value = tierName === 'low' ? 'low' : tierName === 'high' ? 'med' : 'high';
+  setQualityTier(tierName);
 }
 
 let follower = null;
@@ -238,8 +257,8 @@ document.querySelectorAll('#cards .card').forEach(c => {
 });
 document.getElementById('opt-quality').addEventListener('change', e => {
   const map = { low:'low', med:'high', high:'max' };
-  tierName = map[e.target.value] || 'high';
-  ui.toast('Graphics change applies on the next start.', 'dim');
+  setQualityTier(map[e.target.value] || 'high');
+  ui.toast(`Graphics set to ${e.target.options[e.target.selectedIndex].text}.`, 'dim');
 });
 document.getElementById('opt-sens').addEventListener('input', e => { sens = e.target.value/50000; });
 document.getElementById('opt-audio').addEventListener('change', e => {
@@ -257,7 +276,7 @@ function startMode(key){
   audio.start(); audio.resume();
 
   // the sea itself
-  field.configure({ swell:mode.swell, windDeg:mode.windDeg, chop:mode.chop });
+  field.configure({ swell:mode.swell, windDeg:mode.windDeg, chop:mode.chop, count:tier.waves });
   ocean.syncSpectrum();
   const pal = mode.hostile ? SEA_COLOURS.cold : SEA_COLOURS.warm;
   ocean.uniforms.uDeep.value.setRGB(...pal.deep);
@@ -340,6 +359,7 @@ function resume(){
 }
 function toMenu(){
   state = 'menu';
+  if(strikes) strikes.arm(false);
   document.exitPointerLock();
   ui.el.pause.classList.add('hidden');
   ui.el.over.classList.add('hidden');
@@ -350,6 +370,7 @@ function toMenu(){
 }
 function gameOver(title, sub){
   state = 'over';
+  if(strikes) strikes.arm(false);
   document.exitPointerLock();
   ui.el.overTitle.textContent = title;
   ui.el.overSub.textContent = sub;

@@ -32,6 +32,7 @@ export class Post {
     this.rtB  = new THREE.WebGLRenderTarget(2,2, { type:THREE.HalfFloatType, depthBuffer:false });
     this.rtC  = new THREE.WebGLRenderTarget(2,2, { type:THREE.HalfFloatType, depthBuffer:false });
     this.rtD  = new THREE.WebGLRenderTarget(2,2, { type:THREE.HalfFloatType, depthBuffer:false });
+    this.rtE  = new THREE.WebGLRenderTarget(2,2, { type:THREE.HalfFloatType, depthBuffer:false });
     this.rtG  = new THREE.WebGLRenderTarget(2,2, { type:THREE.HalfFloatType, depthBuffer:false });
 
     this.bright = new THREE.ShaderMaterial({
@@ -129,10 +130,17 @@ export class Post {
 
           // rain streaks, only in weather
           if(uRain > 0.001){
-            vec2 rp = vec2(uv.x*uAspect*90.0, uv.y*22.0 - uTime*7.0);
-            float r = h21(floor(rp));
-            float streak = smoothstep(0.985, 1.0, r)*smoothstep(0.0,0.4,fract(rp.y));
-            col += vec3(0.55,0.62,0.72)*streak*uRain*0.5;
+            // Shape each drop inside its cell. The old cell-wide mask made
+            // rain look like falling rectangular pixels on dark nights.
+            vec2 rp = vec2((uv.x + uv.y*0.08)*uAspect*105.0,
+                           uv.y*27.0 - uTime*10.0);
+            vec2 cell = floor(rp), rf = fract(rp);
+            float seed = h21(cell);
+            float dropX = fract(seed*17.71);
+            float thin = 1.0 - smoothstep(0.018, 0.055, abs(rf.x-dropX));
+            float tail = smoothstep(0.02,0.20,rf.y)*(1.0-smoothstep(0.58,0.98,rf.y));
+            float streak = thin*tail*smoothstep(0.76,0.995,seed);
+            col += vec3(0.58,0.67,0.78)*streak*uRain*0.42;
           }
 
           if(uUnder > 0.001) col = mix(col, col*uUnderCol*2.6, uUnder*0.85);
@@ -160,11 +168,20 @@ export class Post {
     const W = Math.max(2, Math.floor(w*pr)), H = Math.max(2, Math.floor(h*pr));
     this.w = W; this.h = H;
     this.rt.setSize(W,H);
-    this.rtB.setSize(W>>1, H>>1);
-    this.rtC.setSize(W>>1, H>>1);
-    this.rtD.setSize(W>>2, H>>2);
-    this.rtG.setSize(W>>1, H>>1);
+    const halfW = Math.max(1, W>>1), halfH = Math.max(1, H>>1);
+    const quarterW = Math.max(1, W>>2), quarterH = Math.max(1, H>>2);
+    this.rtB.setSize(halfW, halfH);
+    this.rtC.setSize(halfW, halfH);
+    this.rtD.setSize(quarterW, quarterH);
+    this.rtE.setSize(quarterW, quarterH);
+    this.rtG.setSize(halfW, halfH);
     this.comp.uniforms.uAspect.value = w/h;
+  }
+
+  setQuality(tier, maxSamples = 4){
+    this.enabled = tier.bloom;
+    this.god = tier.god;
+    this.rt.samples = Math.min(tier.samples || 0, maxSamples || 0);
   }
 
   draw(mat, target){
@@ -192,15 +209,15 @@ export class Post {
     // two-tap separable gaussian, half then quarter
     const t1 = this.blur.uniforms.uTexel.value;
     this.blur.uniforms.tD.value = this.rtB.texture;
-    t1.set(1/(this.w>>1), 1/(this.h>>1));
+    t1.set(1/Math.max(1,this.w>>1), 1/Math.max(1,this.h>>1));
     this.blur.uniforms.uDir.value.set(1,0); this.draw(this.blur, this.rtC);
     this.blur.uniforms.tD.value = this.rtC.texture;
     this.blur.uniforms.uDir.value.set(0,1); this.draw(this.blur, this.rtB);
     this.blur.uniforms.tD.value = this.rtB.texture;
-    t1.set(1/(this.w>>2), 1/(this.h>>2));
+    t1.set(1/Math.max(1,this.w>>2), 1/Math.max(1,this.h>>2));
     this.blur.uniforms.uDir.value.set(1.6,0); this.draw(this.blur, this.rtD);
     this.blur.uniforms.tD.value = this.rtD.texture;
-    this.blur.uniforms.uDir.value.set(0,1.6); this.draw(this.blur, this.rtD);
+    this.blur.uniforms.uDir.value.set(0,1.6); this.draw(this.blur, this.rtE);
 
     // crepuscular rays marched out from the sun
     if(this.god && p.sunAmt > 0.001){
@@ -216,7 +233,7 @@ export class Post {
 
     const u = this.comp.uniforms;
     u.tD.value = this.rt.texture;
-    u.tBloom.value = this.rtD.texture;
+    u.tBloom.value = this.rtE.texture;
     u.tRays.value = this.rtG.texture;
     u.uTime.value += dt;
     u.uBloom.value = p.bloom;

@@ -22,7 +22,11 @@ function mulberry32(a){
 
 export class WaveField {
   constructor(count = 24){
-    this.count = count;
+    // The shader is compiled once for this capacity. Lower quality tiers use
+    // fewer live waves and zero-fill the rest, so changing quality does not
+    // require rebuilding every material that samples the sea.
+    this.count = Math.max(2, Math.floor(count));
+    this.activeCount = this.count;
     this.waves = [];
     this.time = 0;
     this.windDir = new THREE.Vector2(1,0.35).normalize();
@@ -30,9 +34,11 @@ export class WaveField {
   }
 
   /* swell = rough half-height of the sea in metres, chop = 0..1.4 */
-  configure({ swell = 1.0, windDeg = 38, chop = 1.05, longest = 92 } = {}){
+  configure({ swell = 1.0, windDeg = 38, chop = 1.05, longest = 92,
+              count = this.activeCount } = {}){
     const rng = mulberry32(9137);
-    const NW = this.count;
+    const NW = THREE.MathUtils.clamp(Math.floor(count || this.count), 2, this.count);
+    this.activeCount = NW;
     this.swell = swell; this.chop = chop; this.windDeg = windDeg;
     const wind = windDeg*Math.PI/180;
     this.windDir.set(Math.cos(wind), Math.sin(wind));
@@ -106,6 +112,12 @@ export class WaveField {
     for(const v of this.waves){
       A.push(new THREE.Vector4(v.dx, v.dz, v.amp, v.k));
       B.push(new THREE.Vector4(v.w, v.Q, v.phase, 0));
+    }
+    // Uniform arrays keep their compile-time length when a lighter spectrum
+    // is active. Zero waves are inert in both displacement and shading.
+    while(A.length < this.count){
+      A.push(new THREE.Vector4(1, 0, 0, 1));
+      B.push(new THREE.Vector4(0, 0, 0, 0));
     }
     return { A, B };
   }

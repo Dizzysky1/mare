@@ -68,6 +68,68 @@ function makeSoftDot(){
   return tex;
 }
 
+/* Dedicated, dynamic surface meshes let each pooled blast conform to the
+   analytic sea independently. Unit X/Z coordinates are retained beside the
+   attribute so update() only writes existing typed arrays. */
+function makeSurfaceRing(segments = 72){
+  const count = (segments + 1)*2;
+  const pos = new Float32Array(count*3);
+  const ux = new Float32Array(count), uz = new Float32Array(count);
+  const idx = new Uint16Array(segments*6);
+  for(let i = 0; i <= segments; i++){
+    const a = i/segments*Math.PI*2, x = Math.cos(a), z = Math.sin(a);
+    const k = i*2;
+    ux[k] = x*0.96; uz[k] = z*0.96;
+    ux[k+1] = x; uz[k+1] = z;
+    pos[k*3] = ux[k]; pos[k*3+2] = uz[k];
+    pos[(k+1)*3] = ux[k+1]; pos[(k+1)*3+2] = uz[k+1];
+    if(i < segments){
+      const q = i*6;
+      idx[q] = k; idx[q+1] = k+2; idx[q+2] = k+1;
+      idx[q+3] = k+1; idx[q+4] = k+2; idx[q+5] = k+3;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  geometry.setIndex(new THREE.BufferAttribute(idx, 1));
+  return { geometry, ux, uz };
+}
+
+function makeSurfaceDisc(radial = 3, segments = 32){
+  const count = 1 + radial*(segments+1);
+  const pos = new Float32Array(count*3), uv = new Float32Array(count*2);
+  const ux = new Float32Array(count), uz = new Float32Array(count);
+  const idx = new Uint16Array(segments*3 + (radial-1)*segments*6);
+  uv[0] = uv[1] = 0.5;
+  let v = 1;
+  for(let r = 1; r <= radial; r++){
+    const rr = r/radial;
+    for(let i = 0; i <= segments; i++, v++){
+      const a = i/segments*Math.PI*2;
+      ux[v] = Math.cos(a)*rr; uz[v] = Math.sin(a)*rr;
+      pos[v*3] = ux[v]; pos[v*3+2] = uz[v];
+      uv[v*2] = 0.5 + ux[v]*0.5; uv[v*2+1] = 0.5 + uz[v]*0.5;
+    }
+  }
+  let q = 0;
+  for(let i = 0; i < segments; i++){
+    idx[q++] = 0; idx[q++] = 1+i+1; idx[q++] = 1+i;
+  }
+  for(let r = 1; r < radial; r++){
+    const inner = 1 + (r-1)*(segments+1), outer = inner + segments+1;
+    for(let i = 0; i < segments; i++){
+      const a = inner+i, b = a+1, c = outer+i, d = c+1;
+      idx[q++] = a; idx[q++] = b; idx[q++] = c;
+      idx[q++] = b; idx[q++] = d; idx[q++] = c;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geometry.setIndex(new THREE.BufferAttribute(idx, 1));
+  return { geometry, ux, uz };
+}
+
 /* one particle: position/velocity plus the bits that decide how it
    ages. `hug` clamps it to the wave surface instead of letting it
    fall through (the base surge skims, it doesn't arc). */
@@ -114,33 +176,35 @@ export class Blast {
     this.ringMat = new THREE.MeshBasicMaterial({
       color: 0xeaf6ff, transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    this.ringGeo = new THREE.RingGeometry(0.96, 1.0, 56);
     this.rings = [];
     const RN = opts.rings || 6;
     for(let i = 0; i < RN; i++){
-      const mesh = new THREE.Mesh(this.ringGeo, this.ringMat.clone());
-      mesh.rotation.x = -Math.PI/2;
+      const surface = makeSurfaceRing();
+      const mesh = new THREE.Mesh(surface.geometry, this.ringMat.clone());
       mesh.visible = false;
+      mesh.frustumCulled = false;
       mesh.renderOrder = 5;
       scene.add(mesh);
-      this.rings.push({ mesh, t: 0, maxT: 1, r0: 1, rate: 1, cx: 0, cy: 0, cz: 0, water: true, alive: false });
+      this.rings.push({ mesh, ux:surface.ux, uz:surface.uz, t: 0, maxT: 1, r0: 1, rate: 1,
+        cx: 0, cy: 0, cz: 0, water: true, alive: false });
     }
 
     // ── residual foam / scorch discs ──────────────────────────────
     this.dotTex = makeSoftDot();
-    this.dotGeo = new THREE.CircleGeometry(1, 24);
     this.foamMat = new THREE.MeshBasicMaterial({
       map: this.dotTex, color: 0xffffff, transparent: true, opacity: 0,
-      blending: THREE.NormalBlending, depthWrite: false });
+      blending: THREE.NormalBlending, depthWrite: false, side: THREE.DoubleSide });
     this.foams = [];
     const FN = opts.foamPatches || 6;
     for(let i = 0; i < FN; i++){
-      const mesh = new THREE.Mesh(this.dotGeo, this.foamMat.clone());
-      mesh.rotation.x = -Math.PI/2;
+      const surface = makeSurfaceDisc();
+      const mesh = new THREE.Mesh(surface.geometry, this.foamMat.clone());
       mesh.visible = false;
+      mesh.frustumCulled = false;
       mesh.renderOrder = 2;
       scene.add(mesh);
-      this.foams.push({ mesh, t: 0, maxT: 10, cx: 0, cy: 0, cz: 0, water: true });
+      this.foams.push({ mesh, ux:surface.ux, uz:surface.uz, t: 0, maxT: 10, radius: 1,
+        cx: 0, cy: 0, cz: 0, water: true });
     }
 
     // ── a few real lights for the flash — not one per blast, that's
@@ -150,7 +214,7 @@ export class Blast {
     for(let i = 0; i < LN; i++){
       const light = new THREE.PointLight(0xfff0c8, 0, 260, 2);
       scene.add(light);
-      this.lights.push({ light, t: 0, maxT: 0.22 });
+      this.lights.push({ light, t: 0, maxT: 0.22, peak: 0 });
     }
 
     // scratch, reused every call — nothing in water()/land()/update() allocates
@@ -174,7 +238,8 @@ export class Blast {
       L.t = L.maxT;
       L.light.position.set(point.x, point.y + 4, point.z);
       L.light.color.setHex(isWater ? 0xfff0c8 : 0xffb070);
-      L.light.intensity = (isWater ? 900 : 500)*power;
+      L.peak = (isWater ? 900 : 500)*power;
+      L.light.intensity = L.peak;
     }
 
     this._spawnColumn(point, power, isWater);
@@ -303,8 +368,8 @@ export class Blast {
       s.r0 = 1.2*Math.sqrt(power);
       s.cx = point.x; s.cy = point.y; s.cz = point.z; s.water = isWater;
       s.mesh.visible = true;
-      s.mesh.position.set(point.x, point.y, point.z);
-      s.mesh.scale.setScalar(s.r0);
+      s.mesh.position.set(point.x, 0, point.z);
+      s.mesh.scale.setScalar(1);
       s.mesh.material.color.setHex(isWater ? 0xeaf6ff : 0xd9b98a);
       s.mesh.material.opacity = 0;
       return;
@@ -319,9 +384,10 @@ export class Blast {
       // deliberately subtle, but prevent the impact site vanishing abruptly.
       f.maxT = 10 + Math.random()*2;
       f.cx = point.x; f.cy = point.y; f.cz = point.z; f.water = isWater;
+      f.radius = (5 + Math.random()*3)*Math.sqrt(power);
       f.mesh.visible = true;
-      f.mesh.position.set(point.x, point.y + 0.05, point.z);
-      f.mesh.scale.setScalar((5 + Math.random()*3)*Math.sqrt(power));
+      f.mesh.position.set(point.x, 0, point.z);
+      f.mesh.scale.setScalar(1);
       f.mesh.material.color.setHex(isWater ? 0xf2f8fb : 0x2a241c);
       f.mesh.material.opacity = 0;
       return;
@@ -337,7 +403,8 @@ export class Blast {
     for(const L of this.lights){
       if(L.t <= 0){ if(L.light.intensity) L.light.intensity = 0; continue; }
       L.t -= dt;
-      L.light.intensity *= Math.max(0, L.t/L.maxT);
+      const u = Math.max(0, L.t/L.maxT);
+      L.light.intensity = L.peak*u*u;
       if(L.t <= 0) L.light.intensity = 0;
     }
 
@@ -348,8 +415,7 @@ export class Blast {
       if(!s.alive) continue;
       s.t += dt;
       const r = s.r0 + s.t*s.rate;
-      s.mesh.scale.setScalar(r);
-      s.mesh.position.y = (s.water ? this.field.height(s.cx, s.cz) : s.cy) + 0.15;
+      this._deformSurface(s, r, 0.15);
       const fade = 1 - s.t/s.maxT;
       s.mesh.material.opacity = Math.max(0, 0.6*fade*Math.min(1, s.t*6));
       if(s.t >= s.maxT){ s.alive = false; s.mesh.visible = false; }
@@ -358,12 +424,26 @@ export class Blast {
     for(const f of this.foams){
       if(!f.mesh.visible) continue;
       f.t += dt;
-      f.mesh.position.y = (f.water ? this.field.height(f.cx, f.cz) : f.cy) + 0.05;
+      this._deformSurface(f, f.radius, 0.05);
       const grow = Math.min(1, f.t*2.2);
       const fade = 1 - THREE.MathUtils.clamp((f.t - f.maxT*0.4)/(f.maxT*0.6), 0, 1);
       f.mesh.material.opacity = 0.45*grow*fade;
       if(f.t >= f.maxT) f.mesh.visible = false;
     }
+  }
+
+  _deformSurface(surface, radius, lift){
+    const attr = surface.mesh.geometry.attributes.position;
+    const arr = attr.array, ux = surface.ux, uz = surface.uz;
+    for(let i = 0; i < ux.length; i++){
+      const x = ux[i]*radius, z = uz[i]*radius, o = i*3;
+      arr[o] = x;
+      arr[o+1] = (surface.water
+        ? this.field.height(surface.cx + x, surface.cz + z)
+        : surface.cy) + lift;
+      arr[o+2] = z;
+    }
+    attr.needsUpdate = true;
   }
 
   _updatePool(list, points, dt, clampToSurface){
@@ -408,22 +488,26 @@ export class Blast {
     this.scene.remove(this.brightPts, this.mistPts);
     this.brightPts.geometry.dispose(); this.brightPts.material.dispose();
     this.mistPts.geometry.dispose(); this.mistPts.material.dispose();
-    for(const s of this.rings){ this.scene.remove(s.mesh); s.mesh.material.dispose(); }
-    this.ringGeo.dispose(); this.ringMat.dispose();
-    for(const f of this.foams){ this.scene.remove(f.mesh); f.mesh.material.dispose(); }
-    this.dotGeo.dispose(); this.foamMat.dispose(); this.dotTex.dispose();
+    for(const s of this.rings){ this.scene.remove(s.mesh); s.mesh.geometry.dispose(); s.mesh.material.dispose(); }
+    this.ringMat.dispose();
+    for(const f of this.foams){ this.scene.remove(f.mesh); f.mesh.geometry.dispose(); f.mesh.material.dispose(); }
+    this.foamMat.dispose(); this.dotTex.dispose();
     for(const L of this.lights) this.scene.remove(L.light);
   }
 
-  /* Pure maths: how hard does a detonation at `blastPoint` shove a body
-     at `bodyPos`. Inverse-square, capped in range, with enough lift that
-     a near miss heels the hull instead of just sliding it sideways. */
+  /* Pure maths: a softened inverse-square impulse with a smooth finite edge.
+     The cap keeps a close water shot violent without numerically launching a
+     five-ton hull; the cubic range envelope reaches zero cleanly at 250m. */
   static impulseAt(blastPoint, bodyPos, yieldN = 5.2e6){
     const dx = bodyPos.x - blastPoint.x, dy = bodyPos.y - blastPoint.y, dz = bodyPos.z - blastPoint.z;
     if(!Number.isFinite(dx + dy + dz + yieldN) || yieldN <= 0) return null;
-    const dist = Math.max(4, Math.hypot(dx, dy, dz));
-    if(dist > 250) return null;
-    const power = yieldN/(dist*dist);
+    const rawDist = Math.hypot(dx, dy, dz);
+    if(rawDist >= 250) return null;
+    const dist = Math.max(0.001, rawDist);
+    const x = dist/250;
+    const falloff = 1 - x*x*(3 - 2*x);
+    const scale = Math.sqrt(yieldN/5.2e6);
+    const power = Math.min(12000*scale, yieldN/(dist*dist + 18*18))*falloff;
     const f = new THREE.Vector3(dx/dist, dy/dist, dz/dist).multiplyScalar(power);
     f.y += power*0.55;
     return f;

@@ -9,6 +9,7 @@ import { Blast } from './fx/blast.js';
 
 const G = 9.81;
 const FORWARD = new THREE.Vector3(0, 0, 1);
+const storeKind = index => index%3 === 2 ? 'gbu12' : 'mk83';
 
 export class Strikes {
   constructor(scene, field, audio, cb = {}){
@@ -18,12 +19,18 @@ export class Strikes {
     this.interval = 95;
     this.wave = 0;
     this.bombs = [];
+    this.storeKinds = Array.from({ length:6 }, (_, i) => storeKind(i));
+    this.releaseKinds = [];
     this.flash = 0;
 
     this.blast = new Blast(scene, field);
     this.flyover = new Flyover(scene, {
       audio,
-      makeStore: () => buildBomb('mk83'),
+      makeStore: (index) => {
+        const store = buildBomb(this.storeKinds[index] || 'mk83');
+        setFins(store, 0);
+        return store;
+      },
     });
     this.flyover.onRelease = (pos, vel, index) => this.release(pos, vel, index);
     this.flyover.onPass = () => this.cb.toast?.('The engines split the sky overhead.', 'bad');
@@ -51,15 +58,14 @@ export class Strikes {
   }
 
   arm(on, interval = 95){
-    this.active = on;
+    this.active = !!on;
     this.interval = interval;
     this.timer = on ? 48 : 1e9;
     this.wave = 0;
-    if(on) return;
-
     this.flyover.abort();
     for(const b of this.bombs) this.scene.remove(b.mesh);
     this.bombs.length = 0;
+    this.releaseKinds.length = 0;
     for(const m of this.markers){
       m.live = false; m.released = false; m.impact = null;
       m.mesh.visible = false;
@@ -76,6 +82,7 @@ export class Strikes {
     this._aim.copy(target);
     if(ship) this._aim.addScaledVector(ship.vel, 5.5);
     this._aim.y = 0;
+    this.releaseKinds = this.storeKinds.slice(0, count);
 
     this.flyover.start({
       target:this._aim,
@@ -102,11 +109,24 @@ export class Strikes {
   }
 
   release(pos, vel, index){
-    const mesh = buildBomb(index%3 === 2 ? 'gbu12' : 'mk83');
+    const kind = this.releaseKinds[index] || this.storeKinds[index] || 'mk83';
+    const mesh = buildBomb(kind);
     mesh.position.copy(pos);
     setFins(mesh, 0);
     this.scene.add(mesh);
-    this.bombs.push({ mesh, vel:vel.clone(), index, age:0 });
+    const bombVel = vel.clone();
+    const planned = this.flyover.plannedImpacts[index];
+    if(planned){
+      // Aim at the wave height expected when the store arrives. The correction
+      // is tiny, but keeps a high crest from moving the hit outside its marker.
+      const flatT = Math.sqrt(2*Math.max(0.1, pos.y)/G);
+      const at = (Number.isFinite(this.field.time) ? this.field.time : 0) + flatT;
+      const seaY = this.field.height(planned.x, planned.z, at);
+      const fallT = Math.sqrt(2*Math.max(0.1, pos.y-seaY)/G);
+      bombVel.x = (planned.x-pos.x)/fallT;
+      bombVel.z = (planned.z-pos.z)/fallT;
+    }
+    this.bombs.push({ mesh, vel:bombVel, impact:planned ? planned.clone() : null, index, age:0 });
     if(this.markers[index]) this.markers[index].released = true;
     if(this.bombs.length === 1)
       this.cb.toast?.('Something is coming down. Get out from under it.', 'bad');
@@ -117,8 +137,7 @@ export class Strikes {
     this.flash = this.blast.flash;
     this.updateMarkers(dt);
 
-    // Released stores and residual effects finish even if a mode switch
-    // disarms future sorties midway through their fall.
+    // Residual effects finish while disarmed; arm() clears any live stores.
     this.updateBombs(dt, ship, playerPos);
     if(!this.active) return;
 
@@ -148,8 +167,11 @@ export class Strikes {
     for(let i = this.bombs.length-1; i >= 0; i--){
       const b = this.bombs[i];
       b.age += dt;
-      b.vel.y -= G*dt;
+      const x0 = b.mesh.position.x, y0 = b.mesh.position.y, z0 = b.mesh.position.z;
+      const sea0 = this.field.height(x0, z0);
       b.mesh.position.addScaledVector(b.vel, dt);
+      b.mesh.position.y -= 0.5*G*dt*dt;
+      b.vel.y -= G*dt;
       setFins(b.mesh, Math.min(1, b.age*3.5));
 
       this._dir.copy(b.vel);
@@ -161,7 +183,17 @@ export class Strikes {
       const seaY = this.field.height(b.mesh.position.x, b.mesh.position.z);
       if(b.mesh.position.y > seaY) continue;
 
-      this._impact.set(b.mesh.position.x, seaY, b.mesh.position.z);
+      // Resolve the crossing inside this frame, then reconcile X/Z to the
+      // advertised marker so the warning remains an honest gameplay contract.
+      const above0 = y0-sea0, above1 = b.mesh.position.y-seaY;
+      const hitU = above0 > 0
+        ? THREE.MathUtils.clamp(above0/Math.max(1e-6, above0-above1), 0, 1) : 0;
+      this._impact.set(
+        THREE.MathUtils.lerp(x0, b.mesh.position.x, hitU),
+        0,
+        THREE.MathUtils.lerp(z0, b.mesh.position.z, hitU));
+      if(b.impact){ this._impact.x = b.impact.x; this._impact.z = b.impact.z; }
+      this._impact.y = this.field.height(this._impact.x, this._impact.z);
       this.detonate(this._impact, ship, playerPos);
       const marker = this.markers[b.index];
       if(marker){ marker.live = false; marker.mesh.visible = false; }

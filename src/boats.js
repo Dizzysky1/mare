@@ -93,6 +93,9 @@ export class Ship {
     this.rudder = 0;         // −1 … 1
     this.sail = 0.55;        // 0 furled … 1 full
     this.sailAngle = 0;      // radians from centreline
+    this.rigForce = opts.rigForce ?? 150;
+    this.rightingGM = opts.rightingGM ?? 0.45;
+    this.rollDamping = opts.rollDamping ?? 1.8;
     this.heading = opts.heading || 0;
     this.quat.setFromAxisAngle(new THREE.Vector3(0,1,0), this.heading);
     // these are produced by step(); seed them so anything that steers on the
@@ -298,6 +301,50 @@ export class Ship {
     out.torque.add(this._lev);
   }
 
+  /* Put a newly launched hull on its waterline instead of dropping a level,
+     motionless body into an already moving slope. The optional stability
+     values let rough modes start reefed without changing fleet handling. */
+  settleAtSurface({ sail = this.sail, rigForce = this.rigForce,
+                    rightingGM = this.rightingGM, rollDamping = this.rollDamping } = {}){
+    if(Number.isFinite(sail)) this.sail = THREE.MathUtils.clamp(sail, 0, 1);
+    if(Number.isFinite(rigForce) && rigForce >= 0) this.rigForce = rigForce;
+    if(Number.isFinite(rightingGM) && rightingGM >= 0) this.rightingGM = rightingGM;
+    if(Number.isFinite(rollDamping) && rollDamping >= 0) this.rollDamping = rollDamping;
+
+    // Fit the deck's up axis to the mean wave normal under the whole hull.
+    this.quat.setFromAxisAngle(this._ax.set(0,1,0), this.heading);
+    const n = this._f.set(0,0,0);
+    for(const local of this.probes){
+      this._rel.copy(local).applyQuaternion(this.quat);
+      this.field.sample(this.pos.x + this._rel.x, this.pos.z + this._rel.z, this._s);
+      n.x += this._s.nx; n.y += this._s.ny; n.z += this._s.nz;
+    }
+    if(n.lengthSq() > 1e-8){
+      n.normalize();
+      this._dq.setFromUnitVectors(this._v.set(0,1,0), n);
+      this.quat.premultiply(this._dq).normalize();
+    }
+
+    // At rest, probeVol makes equilibrium submersion exactly 1/1.9.
+    // Re-sample after tilting because each probe's vertical lever changed.
+    const targetDepth = this.draft*0.9/1.9;
+    let y = 0, vx = 0, vy = 0, vz = 0;
+    for(const local of this.probes){
+      this._rel.copy(local).applyQuaternion(this.quat);
+      this.field.sample(this.pos.x + this._rel.x, this.pos.z + this._rel.z, this._s);
+      y += this._s.y - this._rel.y - targetDepth;
+      vx += this._s.vx; vy += this._s.vy; vz += this._s.vz;
+    }
+    const invN = 1/this.probes.length;
+    this.pos.y = y*invN;
+    this.vel.set(vx*invN, vy*invN, vz*invN);
+    this.angVel.set(0,0,0);
+    this.prevVel.copy(this.vel); this.accel.set(0,0,0);
+    this.group.position.copy(this.pos);
+    this.group.quaternion.copy(this.quat);
+    return this;
+  }
+
   step(dt, wind){
     const acc = this._acc;
     acc.force.set(0,0,0); acc.torque.set(0,0,0);
@@ -354,7 +401,7 @@ export class Ship {
     // forward and a sheeted-in one mostly just lays you over. Applying it at the
     // centre of effort, well above the keel's side force, is what makes her heel.
     const rigRel = this._rel.set(0, this.mastTop*0.45, this.length*0.10).applyQuaternion(this.quat);
-    const rigF = drive*150*this.submersion;
+    const rigF = drive*this.rigForce*this.submersion;
     f.set(-Math.sin(this.sailAngle)*0.62, 0, Math.cos(this.sailAngle))
      .applyQuaternion(this.quat).multiplyScalar(rigF);
     this.applyForce(f, rigRel, acc);
@@ -368,8 +415,17 @@ export class Ship {
     this.applyForce(f, rudRel, acc);
 
     // ── damping and integration ────────────────────────────────
+    // The render origin is above the ballast/keel centre, so represent its
+    // metacentric righting moment explicitly. Probe buoyancy alone loses its
+    // lever abruptly on steep crests and can leave the hull stable upside-down.
+    const up = this._v.set(0,1,0).applyQuaternion(this.quat);
+    acc.torque.add(this._lev.set(-up.z, 0, up.x).multiplyScalar(this.mass*G*this.rightingGM));
     acc.force.addScaledVector(this.vel, -this.mass*0.06);
-    acc.torque.addScaledVector(this.angVel, -this.mass*0.85);
+    // Strong roll/pitch damping need not make the rudder's yaw response syrupy.
+    f.copy(this.angVel).applyQuaternion(invQ);
+    f.set(f.x*this.rollDamping, f.y*0.85, f.z*this.rollDamping)
+     .applyQuaternion(this.quat).multiplyScalar(-this.mass);
+    acc.torque.add(f);
 
     this.vel.addScaledVector(acc.force, dt/this.mass);
 
