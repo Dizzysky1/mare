@@ -18,9 +18,12 @@
 <div id="hud">
   <div>fps: <b id="fps">–</b></div>
   <div>t since last blast: <b id="age">–</b></div>
-  <button id="b1">water x1</button>
+  <div>flash: <b id="flash">–</b> &nbsp; live particles: <b id="live">–</b></div>
+  <button id="b1">water x1 (paused)</button>
   <button id="b4">water x4 overlap</button>
-  <button id="bland">land x1</button>
+  <button id="bland">land x1 (paused)</button>
+  <button id="resume">resume</button>
+  <div id="stages"></div>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -63,15 +66,51 @@ ground.rotation.x = -Math.PI/2;
 ground.position.set(150, 0.05, -40);
 scene.add(ground);
 
-const blast = new Blast(scene, field, {});
+let blast = new Blast(scene, field, {});
 
 let fpsAcc = 0, fpsN = 0, fpsShow = 0, lastT = performance.now();
-let lastBlastT = performance.now();
+let age = 0, paused = false, mode = 'water';
+
+function pointFor(kind){
+  return kind === 'water'
+    ? new THREE.Vector3(0, field.height(0,0), 0)
+    : new THREE.Vector3(150, 0.05, -40);
+}
+
+function reset(kind, pause = true){
+  blast.dispose();
+  blast = new Blast(scene, field, {});
+  mode = kind; age = 0; paused = pause;
+  blast[kind](pointFor(kind), 1);
+  window.__blast = blast;
+}
+
+// Fixed 120Hz stepping makes screenshot ages exact even when the browser pane
+// throttles requestAnimationFrame while it is not visible.
+function advanceTo(target){
+  if(age > target) reset(mode, true);
+  paused = true;
+  while(age < target){
+    const dt = Math.min(1/120, target - age);
+    blast.update(dt, camera.position);
+    age += dt;
+  }
+}
+
+const stages = [0.1, 0.5, 1.5, 3, 6, 10];
+const stageBox = document.getElementById('stages');
+for(const t of stages){
+  const button = document.createElement('button');
+  button.textContent = `t=${t.toFixed(1)}s`;
+  button.onclick = () => advanceTo(t);
+  stageBox.appendChild(button);
+}
+
 function tick(){
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastT)/1000);
   lastT = now;
-  blast.update(dt, camera.position);
+  if(!paused){ blast.update(dt, camera.position); age += dt; }
 
   // drive the flash the same way post.js would
   renderer.render(scene, camera);
@@ -79,24 +118,32 @@ function tick(){
   fpsAcc += dt; fpsN++;
   if(fpsAcc > 0.5){ fpsShow = fpsN/fpsAcc; fpsAcc = 0; fpsN = 0; }
   document.getElementById('fps').textContent = fpsShow.toFixed(0);
-  document.getElementById('age').textContent = ((now - lastBlastT)/1000).toFixed(2) + 's';
+  document.getElementById('age').textContent = age.toFixed(2) + 's' + (paused ? ' (paused)' : '');
+  document.getElementById('flash').textContent = blast.flash.toFixed(2);
+  let live = 0;
+  for(const q of blast.bright) if(q.life > 0) live++;
+  for(const q of blast.mist) if(q.life > 0) live++;
+  document.getElementById('live').textContent = live;
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
 
 document.getElementById('b1').onclick = () => {
-  blast.water(new THREE.Vector3(0, field.height(0,0), 0), 1);
-  lastBlastT = performance.now();
+  reset('water', true);
 };
 document.getElementById('b4').onclick = () => {
+  blast.dispose();
+  blast = new Blast(scene, field, {});
   const pts = [[-40,-40],[40,-40],[-40,40],[40,40]];
   for(const [x,z] of pts) blast.water(new THREE.Vector3(x, field.height(x,z), z), 1);
-  lastBlastT = performance.now();
+  age = 0; mode = 'water'; paused = false; window.__blast = blast;
 };
 document.getElementById('bland').onclick = () => {
-  blast.land(new THREE.Vector3(150, 0, -40), 1);
-  lastBlastT = performance.now();
+  reset('land', true);
 };
+document.getElementById('resume').onclick = () => { paused = false; };
+
+reset('water', true);
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth/window.innerHeight;

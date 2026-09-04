@@ -255,7 +255,10 @@ export class Player {
 
     // touch bottom?
     const ground = this.world ? this.world.heightAt(this.pos.x, this.pos.z) : -99;
-    if(ground > this.pos.y - 0.2 && ground > -1.4){
+    // Come onto your feet in genuinely wadeable water. The matching
+    // land→swim threshold is deeper, leaving a small hysteresis band so
+    // wave motion cannot flip the state every other frame at the beach.
+    if(ground > this.pos.y - 0.2 && ground > -1.05){
       this.pos.y = ground;
       this.setState('land');
       this.vel.set(0,0,0);
@@ -296,7 +299,7 @@ export class Player {
     } else this.onGround = false;
 
     const seaY = this.field.height(this.pos.x, this.pos.z);
-    if(h < -1.2 && this.pos.y < seaY + 0.3){
+    if(h < -1.35 && this.pos.y < seaY + 0.3){
       this.setState('swim');
     }
     this.speed = Math.hypot(this.vel.x, this.vel.z);

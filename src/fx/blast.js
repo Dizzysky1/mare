@@ -76,7 +76,7 @@ function makeParticle(){
     p: new THREE.Vector3(), v: new THREE.Vector3(),
     life: 0, maxLife: 1, delay: 0,
     size: 1, r: 1, g: 1, b: 1,
-    grav: G, drag: 0, hug: 0,
+    grav: G, drag: 0, hug: 0, water: true, groundY: 0,
   };
 }
 
@@ -114,7 +114,7 @@ export class Blast {
     this.ringMat = new THREE.MeshBasicMaterial({
       color: 0xeaf6ff, transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    this.ringGeo = new THREE.RingGeometry(0.85, 1.0, 56);
+    this.ringGeo = new THREE.RingGeometry(0.96, 1.0, 56);
     this.rings = [];
     const RN = opts.rings || 6;
     for(let i = 0; i < RN; i++){
@@ -123,7 +123,7 @@ export class Blast {
       mesh.visible = false;
       mesh.renderOrder = 5;
       scene.add(mesh);
-      this.rings.push({ mesh, t: 0, maxT: 1, r0: 1, rate: 1, cx: 0, cz: 0, alive: false });
+      this.rings.push({ mesh, t: 0, maxT: 1, r0: 1, rate: 1, cx: 0, cy: 0, cz: 0, water: true, alive: false });
     }
 
     // ── residual foam / scorch discs ──────────────────────────────
@@ -140,7 +140,7 @@ export class Blast {
       mesh.visible = false;
       mesh.renderOrder = 2;
       scene.add(mesh);
-      this.foams.push({ mesh, t: 0, maxT: 10, cx: 0, cz: 0 });
+      this.foams.push({ mesh, t: 0, maxT: 10, cx: 0, cy: 0, cz: 0, water: true });
     }
 
     // ── a few real lights for the flash — not one per blast, that's
@@ -163,7 +163,8 @@ export class Blast {
   land(point, power = 1){ this._detonate(point, power, false); }
 
   _detonate(point, power, isWater){
-    power = THREE.MathUtils.clamp(power, 0.15, 3.0);
+    if(!point || !Number.isFinite(point.x + point.y + point.z)) return;
+    power = Number.isFinite(power) ? THREE.MathUtils.clamp(power, 0.15, 3.0) : 1;
     this.flash = 1;
 
     let li = 0;
@@ -188,30 +189,38 @@ export class Blast {
      the wide foot of the column. Both feel gravity and fall back. */
   _spawnColumn(point, power, isWater){
     const scale = Math.sqrt(power);
-    const coreN = Math.round(110*power);
-    const skirtN = Math.round(90*power);
+    const coreN = Math.round(160*power);
+    const skirtN = Math.round(60*power);
     const peakH = THREE.MathUtils.lerp(38, 55, Math.random())*scale;
 
-    // core: a fountain, not a firehose — each particle gets its own apex
-    // height, and the ones that go higher stay narrower (real water does
-    // this because drag scrubs horizontal speed off the slower streams
-    // long before it touches vertical speed). That correlation is what
-    // makes the shape taper instead of reading as a uniform cloud.
+    // Most droplets form a dense shaft; a smaller shoulder fans outward.
+    // Keeping radial speed low is important — a uniformly ballistic burst
+    // reads as a hollow umbrella instead of a water column.
     let idx = 0;
     for(let n = 0; n < coreN && idx < this.brightN; idx++){
       const q = this.bright[idx];
       if(q.life > 0) continue;
       n++;
       const a = Math.random()*Math.PI*2;
-      const h01 = 0.35 + Math.random()*0.65;           // fraction of peakH this one reaches
+      const shaft = Math.random() < 0.82;
+      // A wide apex distribution keeps the shaft continuous: shorter arcs
+      // occupy its foot while the energetic droplets form the crown.
+      const h01 = shaft
+        ? (0.16 + Math.pow(Math.random(), 0.72)*0.84)
+        : (0.10 + Math.random()*0.58);
       const vy = Math.sqrt(2*peakH*h01*G);
-      const outSpeed = (3 + (1 - h01)*13)*scale;         // low streams flare out, tall ones stay tight
-      q.p.set(point.x + Math.cos(a)*0.6*scale, point.y, point.z + Math.sin(a)*0.6*scale);
+      const outSpeed = (shaft
+        ? (0.45 + Math.pow(Math.random(), 2)*2.5 + (1-h01)*1.8)
+        : (3.0 + Math.random()*5.5))*scale;
+      const rr = Math.random()*(shaft ? 0.8 : 1.8)*scale;
+      q.p.set(point.x + Math.cos(a)*rr, point.y, point.z + Math.sin(a)*rr);
       q.v.set(Math.cos(a)*outSpeed, vy, Math.sin(a)*outSpeed);
-      q.life = q.maxLife = Math.min(2.6, (2*vy/G)*1.15 + 0.2);   // roughly its own flight time
-      q.delay = Math.random()*0.05;
-      q.size = (3.2 + Math.random()*2.6)*scale;
-      q.grav = G; q.drag = 0.12; q.hug = 0;
+      // Keep the droplets through their descent: the rising column breaks up
+      // around 2.5s, but its falling spray is still part of the later plume.
+      q.life = q.maxLife = (2*vy/G)*1.05 + 0.15;
+      q.delay = 0.035 + Math.random()*0.11;
+      q.size = ((shaft ? 5.2 : 4.3) + Math.random()*2.8)*scale;
+      q.grav = G; q.drag = 0.12; q.hug = 0; q.water = isWater; q.groundY = point.y;
       if(isWater){ q.r = 1.0; q.g = 1.0; q.b = 0.98; }
       else       { q.r = 0.32; q.g = 0.24; q.b = 0.16; }
     }
@@ -229,7 +238,7 @@ export class Blast {
       q.life = q.maxLife = 0.5 + Math.random()*0.55;
       q.delay = 0;
       q.size = (4.0 + Math.random()*3.2)*scale;
-      q.grav = G*0.9; q.drag = 0.4; q.hug = 0;
+      q.grav = G*0.9; q.drag = 0.4; q.hug = 0; q.water = isWater; q.groundY = point.y;
       if(isWater){ q.r = 1.0; q.g = 1.0; q.b = 1.0; }
       else       { q.r = 0.40; q.g = 0.32; q.b = 0.22; }
     }
@@ -239,7 +248,7 @@ export class Blast {
      most games skip and the thing that actually reads as "water shot". */
   _spawnSurge(point, power, isWater){
     const scale = Math.sqrt(power);
-    const n0 = Math.round(90*power);
+    const n0 = Math.round(80*power);
     let idx = 0;
     for(let n = 0; n < n0 && idx < this.brightN; idx++){
       const q = this.bright[idx];
@@ -247,12 +256,12 @@ export class Blast {
       n++;
       const a = Math.random()*Math.PI*2;
       q.p.set(point.x, point.y + 0.6, point.z);
-      const outSpeed = (16 + Math.random()*20)*scale;
-      q.v.set(Math.cos(a)*outSpeed, 3 + Math.random()*5, Math.sin(a)*outSpeed);
+      const outSpeed = (18 + Math.random()*16)*scale;
+      q.v.set(Math.cos(a)*outSpeed, 0.5 + Math.random()*2, Math.sin(a)*outSpeed);
       q.life = q.maxLife = 2.2 + Math.random()*1.6;
       q.delay = 0.1 + Math.random()*0.2;
-      q.size = (4.5 + Math.random()*3.5)*scale;
-      q.grav = G*0.35; q.drag = 0.55; q.hug = 1;
+      q.size = (7.0 + Math.random()*4.0)*scale;
+      q.grav = G*0.65; q.drag = 0.45; q.hug = 1; q.water = isWater; q.groundY = point.y;
       if(isWater){ q.r = 0.95; q.g = 0.98; q.b = 1.0; }
       else       { q.r = 0.45; q.g = 0.38; q.b = 0.28; }
     }
@@ -270,15 +279,17 @@ export class Blast {
       if(q.life > 0) continue;
       n++;
       const a = Math.random()*Math.PI*2;
-      const rr = Math.random()*4*scale;
+      const plume = Math.random() < 0.55;
+      const rr = Math.random()*(plume ? 5 : 9)*scale;
+      const out = (plume ? (0.4 + Math.random()*1.2) : (2 + Math.random()*3))*scale;
       q.p.set(point.x + Math.cos(a)*rr, point.y + Math.random()*3*scale, point.z + Math.sin(a)*rr);
-      q.v.set(Math.cos(windA)*windS + (Math.random()-0.5)*1.5, 2 + Math.random()*4*scale, Math.sin(windA)*windS + (Math.random()-0.5)*1.5);
+      q.v.set(Math.cos(windA)*windS + Math.cos(a)*out, (plume ? 2.5 : 0.8) + Math.random()*(plume ? 3 : 2)*scale, Math.sin(windA)*windS + Math.sin(a)*out);
       q.life = q.maxLife = 4.5 + Math.random()*3.2;
       q.delay = 0.5 + Math.random()*0.8;
-      q.size = (8.0 + Math.random()*6.0)*scale;
-      q.grav = -0.6;         // faintly buoyant: it climbs, slowly, then drifts apart
+      q.size = (11.0 + Math.random()*8.0)*scale;
+      q.grav = -0.18;        // enough buoyancy to linger without becoming a smoke stack
       q.drag = 0.5; q.hug = 0;
-      if(isWater){ q.r = 0.92; q.g = 0.95; q.b = 0.97; }
+      if(isWater){ q.r = 0.98; q.g = 1.0; q.b = 1.0; }
       else       { q.r = 0.42; q.g = 0.40; q.b = 0.38; }
     }
   }
@@ -290,7 +301,7 @@ export class Blast {
       s.maxT = 2.6 + Math.random()*0.6;
       s.rate = (28 + Math.random()*10)*Math.sqrt(power);
       s.r0 = 1.2*Math.sqrt(power);
-      s.cx = point.x; s.cz = point.z;
+      s.cx = point.x; s.cy = point.y; s.cz = point.z; s.water = isWater;
       s.mesh.visible = true;
       s.mesh.position.set(point.x, point.y, point.z);
       s.mesh.scale.setScalar(s.r0);
@@ -304,8 +315,10 @@ export class Blast {
     for(const f of this.foams){
       if(f.mesh.visible) continue;
       f.t = 0;
-      f.maxT = isWater ? (8 + Math.random()*3) : (9 + Math.random()*3);
-      f.cx = point.x; f.cz = point.z;
+      // Keep a faint trace through the ten-second mark; the last seconds are
+      // deliberately subtle, but prevent the impact site vanishing abruptly.
+      f.maxT = 10 + Math.random()*2;
+      f.cx = point.x; f.cy = point.y; f.cz = point.z; f.water = isWater;
       f.mesh.visible = true;
       f.mesh.position.set(point.x, point.y + 0.05, point.z);
       f.mesh.scale.setScalar((5 + Math.random()*3)*Math.sqrt(power));
@@ -318,6 +331,7 @@ export class Blast {
   /* ── per-frame ──────────────────────────────────────────────── */
 
   update(dt, camPos){
+    if(!Number.isFinite(dt) || dt <= 0) return;
     this.flash = Math.max(0, this.flash - dt/0.3);
 
     for(const L of this.lights){
@@ -335,7 +349,7 @@ export class Blast {
       s.t += dt;
       const r = s.r0 + s.t*s.rate;
       s.mesh.scale.setScalar(r);
-      s.mesh.position.y = this.field.height(s.cx, s.cz) + 0.15;
+      s.mesh.position.y = (s.water ? this.field.height(s.cx, s.cz) : s.cy) + 0.15;
       const fade = 1 - s.t/s.maxT;
       s.mesh.material.opacity = Math.max(0, 0.6*fade*Math.min(1, s.t*6));
       if(s.t >= s.maxT){ s.alive = false; s.mesh.visible = false; }
@@ -344,7 +358,7 @@ export class Blast {
     for(const f of this.foams){
       if(!f.mesh.visible) continue;
       f.t += dt;
-      f.mesh.position.y = this.field.height(f.cx, f.cz) + 0.05;
+      f.mesh.position.y = (f.water ? this.field.height(f.cx, f.cz) : f.cy) + 0.05;
       const grow = Math.min(1, f.t*2.2);
       const fade = 1 - THREE.MathUtils.clamp((f.t - f.maxT*0.4)/(f.maxT*0.6), 0, 1);
       f.mesh.material.opacity = 0.45*grow*fade;
@@ -367,7 +381,7 @@ export class Blast {
         q.p.addScaledVector(q.v, dt);
 
         if(clampToSurface){
-          const wy = this.field.height(q.p.x, q.p.z);
+          const wy = q.water ? this.field.height(q.p.x, q.p.z) : q.groundY;
           if(q.hug){
             if(q.p.y < wy + 0.4){ q.p.y = wy + 0.4; q.v.y = Math.max(0, q.v.y*0.2); }
           } else if(q.p.y < wy - 0.5){
@@ -406,6 +420,7 @@ export class Blast {
      a near miss heels the hull instead of just sliding it sideways. */
   static impulseAt(blastPoint, bodyPos, yieldN = 5.2e6){
     const dx = bodyPos.x - blastPoint.x, dy = bodyPos.y - blastPoint.y, dz = bodyPos.z - blastPoint.z;
+    if(!Number.isFinite(dx + dy + dz + yieldN) || yieldN <= 0) return null;
     const dist = Math.max(4, Math.hypot(dx, dy, dz));
     if(dist > 250) return null;
     const power = yieldN/(dist*dist);
