@@ -9,6 +9,7 @@ import { Player } from './player.js';
 import { Survival, Quest, LOGBOOK } from './survival.js';
 import { Post } from './post.js';
 import { Strikes } from './strikes.js';
+import { Chart } from './chart.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -152,12 +153,14 @@ addEventListener('keydown', e => {
   if(state === 'play'){
     if(e.code === 'KeyE') interact();
     if(e.code === 'KeyV' && player) player.thirdPerson = !player.thirdPerson;
+    if(e.code === 'KeyM') toggleChart();
     if(e.code === 'KeyQ' && playerShip) playerShip.sail = Math.max(0, playerShip.sail - 0.2);
     if(e.code === 'KeyR' && playerShip) playerShip.sail = Math.min(1, playerShip.sail + 0.2);
     if(e.code === 'KeyF') gov.manual = !gov.manual;
   }
   if(e.code === 'Escape'){
-    if(!ui.el.reader.classList.contains('hidden')) ui.hideReader();
+    if(!chartEl.classList.contains('hidden')) closeChart();
+    else if(!ui.el.reader.classList.contains('hidden')) ui.hideReader();
     else if(state === 'play') pause();
     else if(state === 'pause') resume();
   }
@@ -167,7 +170,8 @@ addEventListener('blur', () => { for(const k in input) input[k] = 0; });
 
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
-  if(!locked && state === 'play' && ui.el.reader.classList.contains('hidden')) pause();
+  if(!locked && state === 'play' && ui.el.reader.classList.contains('hidden')
+     && chartEl.classList.contains('hidden')) pause();
 });
 addEventListener('mousemove', e => {
   if(document.pointerLockElement !== canvas || !player) return;
@@ -266,6 +270,7 @@ document.getElementById('opt-audio').addEventListener('change', e => {
   audio.fade(e.target.checked ? 1 : 0, 0.4);
 });
 document.getElementById('read-close').addEventListener('click', () => ui.hideReader());
+document.getElementById('chart-close').addEventListener('click', () => closeChart());
 document.getElementById('btn-resume').addEventListener('click', resume);
 document.getElementById('btn-quit').addEventListener('click', toMenu);
 document.getElementById('btn-menu').addEventListener('click', toMenu);
@@ -301,6 +306,8 @@ function startMode(key){
   if(playerShip){ scene.remove(playerShip.group); scene.remove(playerShip.spray); playerShip = null; }
 
   quest = new Quest(mode, world);
+  discovered.clear();
+  chartEl.classList.add('hidden');
   survival = new Survival(mode);
 
   if(mode.spectator){
@@ -340,6 +347,58 @@ function startMode(key){
   ui.toast(mode.spectator
     ? 'Nothing to do. That is the point.'
     : 'You are aboard. Something on deck should explain why.', 'dim');
+}
+
+/* ── the chart ──────────────────────────────────────────────── */
+const chartEl = document.getElementById('chart');
+const chart = new Chart(document.getElementById('chart-canvas'));
+const chartNote = document.getElementById('chart-note');
+const discovered = new Set();
+
+/* You chart what you sail past. Hostile water gives up less of itself. */
+function updateDiscovery(){
+  if(!world || !player) return;
+  const reach = mode.hostile ? 850 : 1500;
+  for(const isl of world.islands){
+    if(discovered.has(isl)) continue;
+    if(Math.hypot(player.pos.x-isl.pos.x, player.pos.z-isl.pos.z) < isl.radius + reach)
+      discovered.add(isl);
+  }
+}
+
+function drawChart(){
+  const known = quest && quest.stage > 0 && !mode.hostile;
+  chart.draw({
+    world, discovered,
+    playerPos: player.pos,
+    heading: camHeading(),
+    goal: quest && quest.goal ? (quest.goal.lightPos || quest.goal.pos) : null,
+    questKnown: known,
+    jars: quest ? quest.amphorae : null,
+    boats: fleet ? fleet.boats : null,
+    hostile: !!mode.hostile,
+  });
+  chartNote.textContent = discovered.size === 0
+    ? 'Blank. You have not been anywhere yet.'
+    : mode.hostile
+      ? `${discovered.size} landfall${discovered.size===1?'':'s'} drawn. No light is marked on this one.`
+      : `${discovered.size} of the islands drawn. Only water you have sailed is charted.`;
+}
+
+function toggleChart(){
+  if(chartEl.classList.contains('hidden')) openChart(); else closeChart();
+}
+function openChart(){
+  if(state !== 'play' || !world) return;
+  updateDiscovery();
+  chartEl.classList.remove('hidden');
+  document.exitPointerLock();
+  drawChart();
+}
+function closeChart(){
+  if(chartEl.classList.contains('hidden')) return;
+  chartEl.classList.add('hidden');
+  if(state === 'play') canvas.requestPointerLock();
 }
 
 function pause(){
@@ -630,6 +689,12 @@ function frame(){
       audio.creak(THREE.MathUtils.clamp((Math.abs(playerShip.angVel.x)+Math.abs(playerShip.angVel.z))*2, 0, 1));
     if(sky.flash > 0.9 && sky.flash > lastFlash) setTimeout(()=>audio.thunder(0.6+Math.random()*0.4), 400+Math.random()*2200);
     lastFlash = sky.flash;
+  }
+
+  /* ── the chart, which stays live while you read it ──────── */
+  if(playing){
+    updateDiscovery();
+    if(!chartEl.classList.contains('hidden')) drawChart();
   }
 
   /* ── readout ────────────────────────────────────────────── */

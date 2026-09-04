@@ -83,6 +83,18 @@ input[type=range]{padding:0;width:110px;accent-color:var(--gold)}
 .btn.ghost{background:transparent;border-color:rgba(255,255,255,.14);color:var(--ink-dim)}
 .btn.ghost:hover{background:rgba(255,255,255,.07);color:var(--ink)}
 
+/* the chart */
+.chart-paper{background:linear-gradient(168deg,#efe3c6,#e0cfa8 60%,#d6c298);color:#3a2d1c;
+  padding:16px 16px 10px;border-radius:2px;box-shadow:0 30px 90px rgba(0,0,0,.65);
+  display:flex;flex-direction:column;gap:10px}
+#chart-canvas{display:block;border:1px solid rgba(58,45,28,.35);background:#e9dcbe;
+  width:min(78vw,880px);height:min(66vh,560px)}
+.chart-foot{display:flex;align-items:center;justify-content:space-between;gap:20px}
+#chart-note{font-family:var(--serif);font-size:12.5px;font-style:italic;color:#6a5334}
+.chart-foot .btn{width:auto;margin:0;background:rgba(58,45,28,.10);border-color:rgba(58,45,28,.3);
+  color:#3a2d1c;padding:7px 20px}
+.chart-foot .btn:hover{background:rgba(58,45,28,.2)}
+
 /* reader */
 .paper{background:linear-gradient(170deg,#efe2c8,#dfcda9);color:#3a2d1c;padding:38px 42px;
   width:min(560px,90vw);max-height:80vh;overflow:auto;border-radius:2px;
