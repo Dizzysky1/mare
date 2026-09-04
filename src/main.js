@@ -1,0 +1,670 @@
+import * as THREE from 'three';
+import { WaveField } from './waves.js';
+import { Ocean, TIERS, NISL } from './ocean.js';
+import { Sky } from './sky.js';
+import { World, makeAmphora } from './islands.js';
+import { Ship, Fleet } from './boats.js';
+import { Gulls } from './birds.js';
+import { Player } from './player.js';
+import { Survival, Quest, LOGBOOK } from './survival.js';
+import { Post } from './post.js';
+import { Strikes } from './strikes.js';
+import { UI } from './ui.js';
+import { Audio } from './audio.js';
+
+/* ────────────────────────────────────────────────────────────── */
+
+const MODES = {
+  easy: {
+    key:'easy', name:'Drift', spectator:true, survival:false, dayCycle:false,
+    hour:16.6, swell:0.78, windDeg:38, windSpeed:6.0, storm:0, chop:0.95,
+    boats:7, gulls:90, dayLen:0,
+  },
+  medium: {
+    key:'medium', name:'Deckhand', spectator:false, survival:false, dayCycle:true,
+    hour:9.2, swell:1.05, windDeg:38, windSpeed:7.5, storm:0.04, chop:1.05,
+    boats:6, gulls:80, dayLen:2400,
+  },
+  hard: {
+    key:'hard', name:'Passage', spectator:false, survival:true, hard:true, decay:1,
+    dayCycle:true, hour:6.4, swell:1.55, windDeg:52, windSpeed:9.5, storm:0.12, chop:1.15,
+    boats:4, gulls:55, dayLen:1500,
+  },
+  insane: {
+    key:'insane', name:'The unwelcoming side', spectator:false, survival:true, hard:true, decay:2.0,
+    dayCycle:true, hour:19.6, swell:3.9, windDeg:200, windSpeed:18.0, storm:0.88, chop:1.35,
+    boats:1, gulls:12, dayLen:1100, hostile:true,
+  },
+  insanePlus: {
+    key:'insanePlus', name:'Contested waters', spectator:false, survival:true, hard:true, decay:2.3,
+    dayCycle:true, hour:18.2, swell:3.6, windDeg:200, windSpeed:17.0, storm:0.72, chop:1.35,
+    boats:1, gulls:10, dayLen:1100, hostile:true, strikes:true, strikeInterval:88,
+  },
+};
+
+const SEA_COLOURS = {
+  warm: { deep:[0.0040,0.031,0.062], mid:[0.014,0.170,0.250], shallow:[0.105,0.640,0.590], sss:[0.080,0.480,0.420] },
+  cold: { deep:[0.0035,0.011,0.016], mid:[0.014,0.055,0.062], shallow:[0.055,0.150,0.140], sss:[0.030,0.110,0.105] },
+};
+
+/* ────────────────────────────────────────────────────────────── */
+
+const canvas = document.getElementById('view');
+const ui = new UI();
+const audio = new Audio();
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference:'high-performance', stencil:false });
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;      // we tone map in the composite
+renderer.setSize(innerWidth, innerHeight, false);
+
+const gl = renderer.getContext();
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+const gpuName = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+
+// pick a starting tier from what we can see of the machine
+let tierName = 'high';
+if(/Apple M[1-9]\s*(Pro|Max|Ultra)/i.test(gpuName) || (navigator.hardwareConcurrency||4) >= 10) tierName = 'ultra';
+if(/Apple M[1-9]\s*(Max|Ultra)/i.test(gpuName)) tierName = 'max';
+if(/(Intel|Iris|UHD|Mali|Adreno)/i.test(gpuName)) tierName = 'low';
+let tier = TIERS[tierName];
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x9fb8c4, 0.00016);
+const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.08, 26000);
+camera.position.set(0, 12, 40);
+
+const sky = new Sky(scene, camera);
+const field = new WaveField(tier.waves);
+const ocean = new Ocean(scene, field, sky.uniforms, tier);
+const post = new Post(renderer, scene, camera, tier);
+
+let world = null, fleet = null, gulls = null, playerShip = null, player = null;
+let quest = null, survival = null, mode = MODES.easy, strikes = null;
+let state = 'loading';           // loading | menu | play | pause | over
+let hour = 16.6, storm = 0, wind = new THREE.Vector3(1,0,0.4), windSpeed = 6;
+let sunInfo = { night:0, elevation:0.5, flash:0 };
+let menuT = 0, elapsed = 0;
+
+/* ── quality governor ───────────────────────────────────────── */
+const gov = { q:10, acc:0, frames:0, fps:60, cooldown:1.5, manual:false };
+function applyQuality(){
+  const q = gov.q;
+  const pr = Math.min(devicePixelRatio || 1, THREE.MathUtils.lerp(0.80, tier.pr, q/10));
+  renderer.setPixelRatio(pr);
+  renderer.setSize(innerWidth, innerHeight, false);
+  post.setSize(innerWidth, innerHeight, pr);
+  renderer.toneMapping = post.enabled ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+  ocean.uniforms.uRTSteps.value = q >= 7 ? tier.rt : q >= 4 ? Math.floor(tier.rt*0.5) : 0;
+  ocean.uniforms.uWaveCut.value = q >= 5 ? field.count : Math.max(9, Math.floor(field.count*0.55));
+  ocean.uniforms.uDetail.value = q >= 3 ? 1 : 0.35;
+  post.god = tier.god && q >= 6;
+  gov.rays = q >= 8 ? 36 : 22;
+  const wantShadow = tier.shadow > 0 && q >= 4;
+  if(renderer.shadowMap.enabled !== wantShadow){
+    renderer.shadowMap.enabled = wantShadow;
+    sky.sun.castShadow = wantShadow;
+    scene.traverse(o=>{ if(o.isMesh) o.material && (o.material.needsUpdate = true); });
+  }
+}
+function governor(dt){
+  gov.acc += dt; gov.frames++;
+  if(gov.acc < 0.55) return;
+  gov.fps = gov.frames/gov.acc;
+  gov.acc = 0; gov.frames = 0;
+  if(gov.manual) return;
+  gov.cooldown -= 0.55;
+  if(gov.cooldown > 0) return;
+  const before = gov.q;
+  if(gov.fps < 33 && gov.q > 0) gov.q--;
+  else if(gov.fps > 57 && gov.q < 10) gov.q++;
+  if(gov.q !== before){ applyQuality(); gov.cooldown = 1.6; }
+}
+
+/* ── input ──────────────────────────────────────────────────── */
+const input = { fwd:0, back:0, left:0, right:0, jump:0, crouch:0, sprint:0, slow:0 };
+let sens = 0.0022;
+const KEYS = {
+  KeyW:'fwd', KeyS:'back', KeyA:'left', KeyD:'right', ArrowUp:'fwd', ArrowDown:'back',
+  ArrowLeft:'left', ArrowRight:'right', Space:'jump', ShiftLeft:'sprint', ShiftRight:'sprint',
+  ControlLeft:'crouch', KeyC:'crouch', AltLeft:'slow',
+};
+addEventListener('keydown', e => {
+  if(KEYS[e.code]){ input[KEYS[e.code]] = 1; if(e.code === 'Space') e.preventDefault(); }
+  if(state === 'play'){
+    if(e.code === 'KeyE') interact();
+    if(e.code === 'KeyV' && player) player.thirdPerson = !player.thirdPerson;
+    if(e.code === 'KeyQ' && playerShip) playerShip.sail = Math.max(0, playerShip.sail - 0.2);
+    if(e.code === 'KeyR' && playerShip) playerShip.sail = Math.min(1, playerShip.sail + 0.2);
+    if(e.code === 'KeyF') gov.manual = !gov.manual;
+  }
+  if(e.code === 'Escape'){
+    if(!ui.el.reader.classList.contains('hidden')) ui.hideReader();
+    else if(state === 'play') pause();
+    else if(state === 'pause') resume();
+  }
+});
+addEventListener('keyup', e => { if(KEYS[e.code]) input[KEYS[e.code]] = 0; });
+addEventListener('blur', () => { for(const k in input) input[k] = 0; });
+
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  if(!locked && state === 'play' && ui.el.reader.classList.contains('hidden')) pause();
+});
+addEventListener('mousemove', e => {
+  if(document.pointerLockElement !== canvas || !player) return;
+  player.look(e.movementX, e.movementY, sens);
+});
+canvas.addEventListener('mousedown', () => {
+  if(state === 'play' && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight, false);
+  applyQuality();
+});
+
+/* steering: A/D turn the rudder when you are at the tiller */
+function steer(dt){
+  if(!playerShip) return;
+  const atHelm = player && player.state === 'deck' && player.local.z < -playerShip.length*0.22;
+  let want = 0;
+  if(atHelm){ want = (input.right?1:0) - (input.left?1:0); }
+  playerShip.rudder += (want - playerShip.rudder)*Math.min(1, dt*3.2);
+  playerShip.atHelm = atHelm;
+}
+
+/* ── build the world ────────────────────────────────────────── */
+async function boot(){
+  const step = (msg) => new Promise(r => { ui.el.loadmsg.textContent = msg; setTimeout(r, 16); });
+
+  await step('raising islands…');
+  world = new World(scene, { seed:4210, count:Math.min(NISL, 13), spread:4300,
+                             detail: tier.rings > 300 ? 190 : 120 });
+  ocean.setIslands(world.islands);
+
+  await step('launching boats…');
+  fleet = new Fleet(scene, field, world, { count:7, radius:1500 });
+
+  await step('calling the gulls…');
+  gulls = new Gulls(scene, field, { count: tier.rings > 300 ? 90 : 45 });
+  gulls.onCall = (near) => audio.gull(near);
+
+  await step('waiting for the light…');
+  player = new Player(scene, field, world);
+  player.pos.set(0, 45, 120);
+
+  // the thing that keeps pace, for later
+  buildFollower();
+
+  strikes = new Strikes(scene, field, audio, {
+    toast: (t, k) => ui.toast(t, k),
+    shake: (a) => { if(player) player.shake = Math.max(player.shake, a); },
+    damage: (amount, why) => {
+      if(!survival || !survival.on || survival.dead) return;
+      survival.health = Math.max(0, survival.health - amount);
+      survival.hurtT = 1.0;
+      survival.sanity = Math.max(0, survival.sanity - amount*0.25);
+      if(survival.health <= 0){ survival.dead = true; survival.cause = why; }
+      else ui.toast(why, 'bad');
+    },
+  });
+
+  ui.el.loading.classList.add('hidden');
+  ui.el.menu.classList.remove('hidden');
+  state = 'menu';
+  applyQuality();
+}
+
+let follower = null;
+function buildFollower(){
+  const g = new THREE.Group();
+  const fin = new THREE.Mesh(
+    new THREE.ConeGeometry(0.9, 2.4, 3),
+    new THREE.MeshStandardMaterial({ color:0x0b1418, roughness:0.6 }));
+  fin.rotation.x = -0.25;
+  fin.scale.set(0.35, 1, 1.6);
+  g.add(fin);
+  g.visible = false;
+  scene.add(g);
+  follower = { group:g, angle:0, radius:60, active:false };
+}
+
+/* ── menu ───────────────────────────────────────────────────── */
+document.querySelectorAll('#cards .card').forEach(c => {
+  c.addEventListener('click', () => startMode(c.dataset.mode));
+});
+document.getElementById('opt-quality').addEventListener('change', e => {
+  const map = { low:'low', med:'high', high:'max' };
+  tierName = map[e.target.value] || 'high';
+  ui.toast('Graphics change applies on the next start.', 'dim');
+});
+document.getElementById('opt-sens').addEventListener('input', e => { sens = e.target.value/50000; });
+document.getElementById('opt-audio').addEventListener('change', e => {
+  audio.enabled = e.target.checked;
+  audio.fade(e.target.checked ? 1 : 0, 0.4);
+});
+document.getElementById('read-close').addEventListener('click', () => ui.hideReader());
+document.getElementById('btn-resume').addEventListener('click', resume);
+document.getElementById('btn-quit').addEventListener('click', toMenu);
+document.getElementById('btn-menu').addEventListener('click', toMenu);
+document.getElementById('btn-again').addEventListener('click', () => startMode(mode.key));
+
+function startMode(key){
+  mode = MODES[key];
+  audio.start(); audio.resume();
+
+  // the sea itself
+  field.configure({ swell:mode.swell, windDeg:mode.windDeg, chop:mode.chop });
+  ocean.syncSpectrum();
+  const pal = mode.hostile ? SEA_COLOURS.cold : SEA_COLOURS.warm;
+  ocean.uniforms.uDeep.value.setRGB(...pal.deep);
+  ocean.uniforms.uMid.value.setRGB(...pal.mid);
+  ocean.uniforms.uShallow.value.setRGB(...pal.shallow);
+  ocean.uniforms.uSSS.value.setRGB(...pal.sss);
+  ocean.uniforms.uFoamAmt.value = mode.hostile ? 1.35 : 1.0;
+
+  hour = mode.hour;
+  storm = mode.storm;
+  windSpeed = mode.windSpeed;
+  const wr = mode.windDeg*Math.PI/180;
+  wind.set(Math.cos(wr), 0, Math.sin(wr)).multiplyScalar(windSpeed);
+  sky.uniforms.uWindDir.value.set(Math.cos(wr), Math.sin(wr));
+  elapsed = 0;
+
+  // clear the old fleet
+  for(const b of fleet.boats){ scene.remove(b.group); scene.remove(b.spray); }
+  fleet.boats.length = 0;
+  fleet.max = mode.boats;
+
+  if(playerShip){ scene.remove(playerShip.group); scene.remove(playerShip.spray); playerShip = null; }
+
+  quest = new Quest(mode, world);
+  survival = new Survival(mode);
+
+  if(mode.spectator){
+    player.setState('fly');
+    player.pos.set(-40, 26, 90);
+    player.yaw = 2.6; player.pitch = -0.12;
+    ui.setObjective(null);
+  } else {
+    playerShip = new Ship(scene, field, {
+      player:true, x:0, z:0, heading: mode.hostile ? 2.4 : 0.6,
+      hullColor:0xf2efe6, stripe:0x1f6f9c, boot:0x8f3a2e,
+    });
+    playerShip.sail = 0.6;
+    player.boardShip(playerShip);
+    if(quest.need || mode.key !== 'easy') quest.placeAmphorae(scene, makeAmphora, 3);
+    ui.setObjective(quest.status(player.pos));
+  }
+
+  gulls.count = mode.gulls;
+  gulls.birds.forEach((b,i)=> b.obj.visible = i < mode.gulls);
+  gulls.reseed(player.pos, world, []);
+
+  follower.active = !!mode.hostile;
+  follower.group.visible = false;
+  if(strikes) strikes.arm(!!mode.strikes, mode.strikeInterval || 95);
+
+  ui.el.menu.classList.add('hidden');
+  ui.el.over.classList.add('hidden');
+  ui.el.hud.classList.remove('hidden');
+  ui.setStats(survival, mode.survival);
+  ui.el.crosshair.style.display = mode.spectator ? 'none' : '';
+  state = 'play';
+  gov.q = 10; gov.cooldown = 2.5; applyQuality();
+  audio.fade(1, 2.0);
+  canvas.requestPointerLock();
+
+  ui.toast(mode.spectator
+    ? 'Nothing to do. That is the point.'
+    : 'You are aboard. Something on deck should explain why.', 'dim');
+}
+
+function pause(){
+  if(state !== 'play') return;
+  state = 'pause';
+  document.exitPointerLock();
+  ui.el.pause.classList.remove('hidden');
+  ui.el.pauseSub.textContent = mode.spectator ? 'The sea keeps going without you.' : quest ? quest.text : '';
+  audio.fade(0.25, 0.4);
+}
+function resume(){
+  if(state !== 'pause') return;
+  state = 'play';
+  ui.el.pause.classList.add('hidden');
+  audio.fade(1, 0.6);
+  canvas.requestPointerLock();
+}
+function toMenu(){
+  state = 'menu';
+  document.exitPointerLock();
+  ui.el.pause.classList.add('hidden');
+  ui.el.over.classList.add('hidden');
+  ui.el.hud.classList.add('hidden');
+  ui.el.menu.classList.remove('hidden');
+  ui.setFx({ vignette:0, damage:0 });
+  audio.fade(0.5, 1.0);
+}
+function gameOver(title, sub){
+  state = 'over';
+  document.exitPointerLock();
+  ui.el.overTitle.textContent = title;
+  ui.el.overSub.textContent = sub;
+  ui.el.over.classList.remove('hidden');
+  audio.fade(0.3, 1.2);
+}
+
+/* ── interaction ────────────────────────────────────────────── */
+let forageCool = 0;
+function findInteraction(){
+  if(!player || mode.spectator) return null;
+  const p = player.pos;
+
+  if(player.state === 'deck' && playerShip && playerShip.props){
+    const P = playerShip.props;
+    const near = (obj, r = 1.7) => {
+      const w = new THREE.Vector3(); obj.getWorldPosition(w);
+      return w.distanceTo(p) < r;
+    };
+    if(near(P.logbook, 2.0)){
+      return quest.stage === 0
+        ? { label:'read the logbook', act:() => readLogbook() }
+        : { label:'read the logbook again', act:() => readLogbook(true) };
+    }
+    if(mode.survival){
+      if(near(P.water)) return { label:`drink (${survival.supplies.water} left)`, act:() => sip('water') };
+      if(near(P.food))  return { label:`eat (${survival.supplies.food} left)`, act:() => sip('food') };
+      if(near(P.citrus))return { label:`take a lemon (${survival.supplies.citrus} left)`, act:() => sip('citrus') };
+    }
+  }
+
+  if(player.state === 'swim' && playerShip){
+    if(p.distanceTo(playerShip.pos) < playerShip.length*0.55 + 2.5)
+      return { label:'climb aboard', act:() => {
+        player.boardShip(playerShip);
+        ui.toast('You haul yourself over the rail, streaming.');
+        audio.splash(0.7);
+      }};
+  }
+
+  if(player.state === 'land'){
+    for(const a of quest.amphorae){
+      if(!a.taken && a.pos.distanceTo(p) < 2.6)
+        return { label:'take the amphora', act:() => {
+          if(quest.take(a)){
+            audio.blip({ freq:520, type:'triangle', dur:0.5, gain:0.09, sweep:1.6 });
+            ui.toast(`Amphora recovered — ${quest.found} of ${quest.need}.`);
+            if(quest.found >= quest.need) ui.toast('That is three. Now the light.', '');
+          }
+        }};
+    }
+    const near = world.nearest(p.x, p.z).island;
+    if(near && near.wellPos && near.wellPos.distanceTo(p) < 3.2 && mode.survival)
+      return { label:'drink from the cistern', act:() => {
+        survival.refill('water', 6);
+        ui.toast('Cold, and tasting of stone. You fill the skin as well.');
+        audio.splash(0.35);
+      }};
+    if(mode.survival && forageCool <= 0 && world.heightAt(p.x,p.z) > 2.0)
+      return { label:'forage', act:() => {
+        forageCool = 12;
+        const luck = Math.random();
+        if(luck < 0.42){ survival.refill('food', 2); ui.toast('Figs, mostly green. Better than nothing.'); }
+        else if(luck < 0.68){ survival.refill('citrus', 1); ui.toast('A lemon tree, half wild. You strip what you can reach.'); }
+        else ui.toast('Thorn scrub and dust. Nothing here.', 'dim');
+      }};
+    if(quest.stage > 0 && quest.goal.lightPos && quest.goal.lightPos.distanceTo(p) < 42){
+      if(quest.need && quest.found < quest.need)
+        return { label:`the door is barred — ${quest.need - quest.found} more amphorae`, act:()=>{} };
+    }
+  }
+  return null;
+}
+
+function readLogbook(again){
+  const L = again ? null : quest.read();
+  const key = mode.key === 'medium' ? 'medium' : mode.key === 'hard' ? 'hard' : 'insane';
+  const book = L || LOGBOOK[key];
+  document.exitPointerLock();
+  ui.showReader(book, () => { if(state === 'play') canvas.requestPointerLock(); });
+  if(L){
+    ui.toast('Now you know why you sailed.');
+    ui.setObjective(quest.status(player.pos));
+  }
+}
+function sip(kind){
+  const msg = survival.consume(kind);
+  if(msg){ ui.toast(msg); audio.blip({ freq:220, type:'sine', dur:0.3, gain:0.05, sweep:0.8 }); }
+  else ui.toast('Empty. You will have to find more ashore.', 'bad');
+}
+function interact(){
+  const it = findInteraction();
+  if(it) it.act();
+}
+
+/* ── the loop ───────────────────────────────────────────────── */
+const clock = new THREE.Clock();
+const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3();
+const sunUv = new THREE.Vector2(0.5,0.5);
+const bearing = (dx, dz) => Math.atan2(dx, -dz);
+const camHeading = () => {
+  const f = camera.getWorldDirection(tmp2);
+  return bearing(f.x, f.z);
+};
+const tint = new THREE.Color(1,1,1);
+let lastFlash = 0;
+
+function frame(){
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, clock.getDelta());
+  governor(dt);
+
+  if(state === 'loading'){ renderer.render(scene, camera); return; }
+
+  const playing = state === 'play';
+  const simDt = (playing || state === 'menu') ? dt : 0;
+  elapsed += simDt;
+
+  field.update(simDt);
+
+  if(mode.dayLen > 0 && playing) hour = (hour + simDt*24/mode.dayLen) % 24;
+
+  // weather drifts, and in the hostile sea it never really lets up
+  if(playing && mode.hostile){
+    storm = 0.72 + 0.26*Math.sin(elapsed*0.03) + 0.02*Math.sin(elapsed*0.31);
+  } else if(playing && mode.key === 'hard'){
+    storm = THREE.MathUtils.clamp(0.10 + 0.32*Math.sin(elapsed*0.012 + 2.0), 0, 0.55);
+  }
+  /* ── camera ─────────────────────────────────────────────── */
+  if(state === 'menu'){
+    menuT += dt;
+    const r = 78, a = menuT*0.055;
+    const tgt = fleet.boats.length ? fleet.boats[0].pos : tmp2.set(0,0,0);
+    camera.position.set(tgt.x + Math.cos(a)*r, 9 + Math.sin(menuT*0.21)*3.2 + field.height(tgt.x, tgt.z), tgt.z + Math.sin(a)*r);
+    camera.lookAt(tgt.x, tgt.y + 2.5, tgt.z);
+  } else if(player){
+    if(playing){
+      steer(dt);
+      player.update(dt, {
+        fwd:input.fwd, back:input.back,
+        left: playerShip && player.state === 'deck' && playerShip.atHelm ? 0 : input.left,
+        right: playerShip && player.state === 'deck' && playerShip.atHelm ? 0 : input.right,
+        jump:input.jump, crouch:input.crouch, sprint:input.sprint, slow:input.slow,
+      }, playerShip);
+    }
+    player.applyCamera(camera, dt);
+  }
+
+  const focus = camera.position;
+
+  /* ── world sim ──────────────────────────────────────────── */
+  if(playerShip && simDt > 0) playerShip.update(simDt, wind, focus);
+  if(simDt > 0){
+    fleet.update(simDt, wind, focus, focus);
+    const allBoats = playerShip ? [playerShip, ...fleet.boats] : fleet.boats;
+    gulls.update(simDt, focus, world, allBoats, sunInfo.night);
+    world.update(simDt, sunInfo.night);
+  }
+
+  sunInfo = sky.update(hour, storm, dt, playerShip ? playerShip.pos : focus);
+
+  // the deck lamp, lit when it earns its keep
+  if(playerShip && playerShip.lamp){
+    const on = THREE.MathUtils.clamp(sunInfo.night*1.5 + storm*0.55, 0, 1);
+    playerShip.lamp.intensity = 38*on;
+    playerShip.lantern.material.emissiveIntensity = 2.6*on;
+  }
+  ocean.update(camera, post.h || innerHeight);
+
+  /* ── survival & quest ───────────────────────────────────── */
+  let underwater = false;
+  const seaAtCam = field.height(camera.position.x, camera.position.z);
+  underwater = camera.position.y < seaAtCam - 0.05;
+
+  if(playing && mode.survival && survival){
+    const nearIsl = world.nearest(player.pos.x, player.pos.z);
+    let boatNear = false;
+    for(const b of fleet.boats) if(b.pos.distanceToSquared(player.pos) < 300*300){ boatNear = true; break; }
+    const msg = survival.update(dt, {
+      night: sunInfo.night > 0.5,
+      daylight: sunInfo.elevation > 0.12 && storm < 0.5,
+      storm,
+      alone: !boatNear && nearIsl.dist > 900,
+      landNear: nearIsl.dist < 260,
+      ashore: player.state === 'land',
+      boatNear,
+      gullNear: false,
+      hot: sunInfo.elevation > 0.5 && storm < 0.3,
+      exerting: input.sprint && player.speed > 1,
+      drowning: player.state === 'swim' && player.breath <= 0.01,
+      cold: player.state === 'swim' && !!mode.hostile,
+    });
+    if(msg) ui.toast(msg, 'bad');
+    ui.setStats(survival, true);
+    if(survival.dead) gameOver('Lost with all hands', survival.cause);
+  }
+
+  if(playing && quest && !mode.spectator){
+    const st = quest.status(player.pos);
+    ui.setObjective(st);
+    if(quest.checkWin(player.pos, player.state === 'land')){
+      const t = Math.floor(elapsed/60);
+      gameOver('The lamp is lit',
+        mode.hostile
+          ? `You got the jars up the stairs and the light caught. Whatever was keeping pace turned away. ${t} minutes.`
+          : `You climbed to the lamp and the light caught. It can be seen for thirty miles. ${t} minutes.`);
+    }
+    // compass: bearings are clockwise from −Z ("north")
+    const heading = camHeading();
+    if(st.marker && !mode.hostile){
+      ui.updateCompass(heading, bearing(st.marker.x - player.pos.x, st.marker.z - player.pos.z));
+      tmp.copy(st.marker).project(camera);
+      const on = tmp.z < 1 && Math.abs(tmp.x) < 0.98 && Math.abs(tmp.y) < 0.98;
+      ui.screenMarker(on, (tmp.x*0.5+0.5)*innerWidth, (-tmp.y*0.5+0.5)*innerHeight);
+    } else {
+      ui.updateCompass(heading, null);
+      ui.screenMarker(false);
+    }
+  } else if(playing){
+    ui.updateCompass(camHeading(), null);
+    ui.screenMarker(false);
+  }
+
+  /* ── ordnance ───────────────────────────────────────────── */
+  if(strikes && simDt > 0){
+    strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip, player ? player.pos : focus);
+  }
+
+  /* ── the thing that keeps pace ──────────────────────────── */
+  if(follower.active && playerShip && playing){
+    const scare = survival ? 1 - survival.sanity/100 : 0;
+    follower.angle += dt*(0.10 + scare*0.22);
+    follower.radius = THREE.MathUtils.lerp(follower.radius, 26 + (1-scare)*70, dt*0.2);
+    const x = playerShip.pos.x + Math.cos(follower.angle)*follower.radius;
+    const z = playerShip.pos.z + Math.sin(follower.angle)*follower.radius;
+    follower.group.position.set(x, field.height(x,z) - 0.15, z);
+    follower.group.rotation.y = -follower.angle + Math.PI/2;
+    follower.group.visible = scare > 0.18 || sunInfo.night > 0.4;
+    if(follower.group.visible && Math.random() < dt*0.06) audio.whisper();
+  }
+
+  /* ── interaction prompt ─────────────────────────────────── */
+  if(playing){
+    forageCool = Math.max(0, forageCool - dt);
+    const it = findInteraction();
+    ui.setPrompt(it ? `<key>E</key>${it.label}` : null);
+  }
+
+  /* ── audio ──────────────────────────────────────────────── */
+  if(playing){
+    const rough = THREE.MathUtils.clamp(field.swell/2.2, 0, 1);
+    audio.update(dt, {
+      sea: rough, foam: rough*0.7 + storm*0.5, wind: THREE.MathUtils.clamp(windSpeed/20,0,1)*(0.5+storm),
+      rain: storm > 0.4 ? (storm-0.4)*1.6 : 0, under: underwater, near: 1,
+    });
+    if(playerShip && Math.abs(playerShip.angVel.x) + Math.abs(playerShip.angVel.z) > 0.22)
+      audio.creak(THREE.MathUtils.clamp((Math.abs(playerShip.angVel.x)+Math.abs(playerShip.angVel.z))*2, 0, 1));
+    if(sky.flash > 0.9 && sky.flash > lastFlash) setTimeout(()=>audio.thunder(0.6+Math.random()*0.4), 400+Math.random()*2200);
+    lastFlash = sky.flash;
+  }
+
+  /* ── readout ────────────────────────────────────────────── */
+  if(playing){
+    const kn = playerShip ? (playerShip.fwdSpeed*1.94384).toFixed(1) : null;
+    const h = Math.floor(hour), m = Math.floor((hour%1)*60);
+    ui.setReadout([
+      `<b>${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}</b>`,
+      playerShip ? `${kn} kn · sail ${Math.round(playerShip.sail*100)}%` : null,
+      playerShip && playerShip.atHelm ? '<b>at the tiller</b> — A/D to steer' : null,
+      player.state === 'swim' ? `breath ${Math.round(player.breath*100)}%` : null,
+      `${Math.round(gov.fps)} fps${gov.manual?' (locked)':''} · q${gov.q}`,
+    ]);
+  }
+
+  /* ── post ───────────────────────────────────────────────── */
+  const sunDir = sky.uniforms.uSunDir.value;
+  const fwdV = camera.getWorldDirection(tmp3);
+  const sunFront = sunDir.dot(fwdV) > 0.05;
+  tmp.copy(camera.position).addScaledVector(sunDir, 4000).project(camera);
+  sunUv.set(tmp.x*0.5+0.5, -tmp.y*0.5+0.5);
+  const sunVisible = sunFront && sunUv.x > -0.6 && sunUv.x < 1.6 && sunUv.y > -0.6 && sunUv.y < 1.6;
+
+  const insanity = survival && mode.survival ? THREE.MathUtils.clamp(1 - survival.sanity/60, 0, 1) : 0;
+  const hurt = survival ? THREE.MathUtils.clamp(1 - survival.health/45, 0, 1) : 0;
+  tint.setRGB(1,1,1);
+  if(mode.hostile) tint.setRGB(0.93, 0.97, 1.06);
+  if(insanity > 0) tint.lerp(new THREE.Color(1.06, 0.92, 0.92), insanity*0.7);
+
+  post.render(dt, {
+    bloom: 0.42 + (mode.hostile?0.10:0) ,
+    bloomThresh: 1.02,
+    exposure: underwater ? 0.85 : 1.0,
+    vignette: 0.30 + insanity*0.35 + hurt*0.2,
+    grain: 0.030 + insanity*0.05,
+    chroma: insanity*0.8,
+    under: underwater ? 1 : 0,
+    sat: 1 - insanity*0.35 - (survival && survival.vitamin < 30 ? (1-survival.vitamin/30)*0.4 : 0),
+    warp: insanity,
+    flash: sky.flash*0.30*storm + (strikes ? strikes.flash*0.55 : 0),
+    rain: storm > 0.42 ? (storm-0.42)*1.5 : 0,
+    tint,
+    sunUv, sunAmt: sunVisible ? 0.5*(1-storm*0.8)*Math.max(0, sunDir.y+0.15) : 0,
+    rays: gov.rays,
+  });
+
+  ui.setFx({
+    vignette: state === 'play' ? Math.max(0, insanity*0.25) : 0,
+    damage: hurt*0.7 + (survival && survival.hurtT > 0 ? 0.25 : 0),
+  });
+}
+
+boot();
+frame();
+
+// expose a little for tinkering from the console
+window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
+  get player(){return player;}, get ship(){return playerShip;},
+  get fleet(){return fleet;}, get world(){return world;} };

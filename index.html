@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>MARE — a Mediterranean ocean</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<!-- ── loading ────────────────────────────────────────────── -->
+<div id="loading" class="screen">
+  <div class="loadwrap">
+    <div class="title">MARE</div>
+    <div class="sub" id="loadmsg">charting the water…</div>
+    <div class="loadbar"><i></i></div>
+  </div>
+</div>
+
+<!-- ── main menu ──────────────────────────────────────────── -->
+<div id="menu" class="screen hidden">
+  <div class="menu-inner">
+    <header>
+      <div class="title">MARE</div>
+      <div class="tag">an ocean, some boats, and the birds that follow them</div>
+    </header>
+
+    <div class="cards" id="cards">
+      <button class="card" data-mode="easy">
+        <div class="card-top"><span class="dot d-easy"></span><h3>Easy</h3><em>Drift</em></div>
+        <p>No body, no needs, no end. Fly wherever you like, as a spectator. Look at the light on the water, follow a fishing boat, sit above an island. Nothing can hurt you.</p>
+        <ul><li>Free camera, unlimited flight</li><li>Calm summer swell</li><li>Fixed golden afternoon</li></ul>
+      </button>
+
+      <button class="card" data-mode="medium">
+        <div class="card-top"><span class="dot d-med"></span><h3>Medium</h3><em>Deckhand</em></div>
+        <p>You are a person, on a boat, on real water. The hull is buoyant and the deck moves under you — lean, stumble, go overboard, swim, climb back. Something on board will tell you why you sailed.</p>
+        <ul><li>Rigid-body hull, sail &amp; rudder</li><li>Articulated body, walk / swim / climb</li><li>Objective must be discovered</li></ul>
+      </button>
+
+      <button class="card" data-mode="hard">
+        <div class="card-top"><span class="dot d-hard"></span><h3>Hard</h3><em>Passage</em></div>
+        <p>The sea keeps its manners, your body does not. Hunger, thirst, scurvy, sanity, blood. A full day turns over you. Islands hold water, fruit and things older than you.</p>
+        <ul><li>Health · hunger · thirst · scurvy · sanity</li><li>Day/night cycle, stars, moon</li><li>Forage ashore or die aboard</li></ul>
+      </button>
+
+      <button class="card" data-mode="insane" >
+        <div class="card-top"><span class="dot d-ins"></span><h3>Insane</h3><em>The unwelcoming side</em></div>
+        <p>Not the Mediterranean any more. Black water, six-metre seas, no compass, no mercy, and the strong feeling that the sea is counting you. Find the light before the light stops mattering.</p>
+        <ul><li>Storm state, lightning, rain, cold</li><li>All needs decay twice as fast</li><li>No compass. No help. Company.</li></ul>
+      </button>
+      <button class="card" data-mode="insanePlus">
+        <div class="card-top"><span class="dot d-plus"></span><h3>Insane+</h3><em>Contested waters</em></div>
+        <p>Everything the unwelcoming side has, and somebody else's air force using this stretch of sea as a range. Unmarked fast jets come in low, mark the water, and leave. Read the rings and put the helm over.</p>
+        <ul><li>Live ordnance, blast waves, near misses</li><li>Hull takes real impulse from the shock</li><li>Needs decay faster still</li></ul>
+      </button>
+    </div>
+
+    <div class="menu-foot">
+      <div class="opts">
+        <label>Graphics
+          <select id="opt-quality">
+            <option value="low">Low</option>
+            <option value="med" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>Sensitivity <input id="opt-sens" type="range" min="20" max="300" value="110"></label>
+        <label class="chk"><input id="opt-audio" type="checkbox" checked> Sound</label>
+      </div>
+      <div class="keys">
+        <b>WASD</b> move · <b>Mouse</b> look · <b>Space</b> jump/up · <b>Shift</b> sprint/down ·
+        <b>E</b> interact · <b>Q/R</b> sail · <b>V</b> view · <b>M</b> map · <b>Esc</b> pause
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── in-game hud ────────────────────────────────────────── -->
+<div id="hud" class="hidden">
+  <div id="compass"><div class="strip" id="cstrip"></div><div class="cneedle"></div></div>
+
+  <div id="stats" class="hidden">
+    <div class="bar" data-k="health"><span class="ico">✚</span><i style="--c:#e4574c"></i><b></b></div>
+    <div class="bar" data-k="food"><span class="ico">✿</span><i style="--c:#d8a13a"></i><b></b></div>
+    <div class="bar" data-k="water"><span class="ico">≈</span><i style="--c:#49a7d8"></i><b></b></div>
+    <div class="bar" data-k="vitamin"><span class="ico">☘</span><i style="--c:#79c46b"></i><b></b></div>
+    <div class="bar" data-k="sanity"><span class="ico">◉</span><i style="--c:#b48ad0"></i><b></b></div>
+  </div>
+
+  <div id="objective" class="hidden"><h4>Objective</h4><p id="obj-text"></p><span id="obj-dist"></span></div>
+
+  <div id="readout"></div>
+  <div id="prompt" class="hidden"></div>
+  <div id="toasts"></div>
+  <div id="crosshair"></div>
+  <div id="marker" class="hidden"><span></span></div>
+</div>
+
+<div id="fx-vignette"></div>
+<div id="fx-flash"></div>
+<div id="fx-damage"></div>
+
+<!-- ── reader (logbook / notes) ───────────────────────────── -->
+<div id="reader" class="screen hidden">
+  <div class="paper">
+    <h2 id="read-title"></h2>
+    <div id="read-body"></div>
+    <button class="btn" id="read-close">Close</button>
+  </div>
+</div>
+
+<!-- ── pause ──────────────────────────────────────────────── -->
+<div id="pause" class="screen hidden">
+  <div class="panel">
+    <h2>Paused</h2>
+    <p id="pause-sub"></p>
+    <button class="btn" id="btn-resume">Resume</button>
+    <button class="btn ghost" id="btn-quit">Leave for the menu</button>
+  </div>
+</div>
+
+<!-- ── end screens ────────────────────────────────────────── -->
+<div id="over" class="screen hidden">
+  <div class="panel">
+    <h2 id="over-title"></h2>
+    <p id="over-sub"></p>
+    <button class="btn" id="btn-again">Sail again</button>
+    <button class="btn ghost" id="btn-menu">Main menu</button>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

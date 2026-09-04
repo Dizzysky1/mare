@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>blast preview</title>
+<style>
+  html,body{ margin:0; height:100%; background:#0a1a24; overflow:hidden; font-family:monospace; }
+  canvas{ display:block; }
+  #hud{ position:fixed; top:8px; left:8px; color:#dff; font-size:12px; background:rgba(0,0,0,0.45); padding:8px 10px; border-radius:6px; line-height:1.5; z-index:5; }
+  #hud b{ color:#ffe9b0; }
+  button{ font-family:monospace; margin-right:6px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="hud">
+  <div>fps: <b id="fps">–</b></div>
+  <div>t since last blast: <b id="age">–</b></div>
+  <button id="b1">water x1</button>
+  <button id="b4">water x4 overlap</button>
+  <button id="bland">land x1</button>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { Blast } from './blast.js';
+
+const field = { height:(x,z) => Math.sin(x*0.05)*0.4 + Math.cos(z*0.04)*0.3 };
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fd0e8);
+scene.fog = new THREE.Fog(0x9fd0e8, 300, 2200);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.5, 5000);
+camera.position.set(0, 40, 220);
+camera.lookAt(0, 10, 0);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x1a2a1a, 1.1));
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.6);
+sun.position.set(200, 400, 100);
+scene.add(sun);
+
+const sea = new THREE.Mesh(
+  new THREE.PlaneGeometry(20000, 20000, 1, 1),
+  new THREE.MeshStandardMaterial({ color:0x0e3a52, roughness:0.35, metalness:0.05 })
+);
+sea.rotation.x = -Math.PI/2;
+sea.renderOrder = 1;
+scene.add(sea);
+
+// ground patch for land tests, off to the side
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(60, 24),
+  new THREE.MeshStandardMaterial({ color:0x8a7a55, roughness:1 })
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.set(150, 0.05, -40);
+scene.add(ground);
+
+const blast = new Blast(scene, field, {});
+
+let fpsAcc = 0, fpsN = 0, fpsShow = 0, lastT = performance.now();
+let lastBlastT = performance.now();
+function tick(){
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT)/1000);
+  lastT = now;
+  blast.update(dt, camera.position);
+
+  // drive the flash the same way post.js would
+  renderer.render(scene, camera);
+
+  fpsAcc += dt; fpsN++;
+  if(fpsAcc > 0.5){ fpsShow = fpsN/fpsAcc; fpsAcc = 0; fpsN = 0; }
+  document.getElementById('fps').textContent = fpsShow.toFixed(0);
+  document.getElementById('age').textContent = ((now - lastBlastT)/1000).toFixed(2) + 's';
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+document.getElementById('b1').onclick = () => {
+  blast.water(new THREE.Vector3(0, field.height(0,0), 0), 1);
+  lastBlastT = performance.now();
+};
+document.getElementById('b4').onclick = () => {
+  const pts = [[-40,-40],[40,-40],[-40,40],[40,40]];
+  for(const [x,z] of pts) blast.water(new THREE.Vector3(x, field.height(x,z), z), 1);
+  lastBlastT = performance.now();
+};
+document.getElementById('bland').onclick = () => {
+  blast.land(new THREE.Vector3(150, 0, -40), 1);
+  lastBlastT = performance.now();
+};
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+window.__blast = blast;
+</script>
+</body>
+</html>

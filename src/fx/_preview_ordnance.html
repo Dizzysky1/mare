@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ordnance preview</title>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"}}</script>
+<style>
+  html,body{margin:0;height:100%;background:#7a8a92;overflow:hidden;font-family:monospace}
+  #hud{position:fixed;top:8px;left:8px;color:#fff;background:rgba(0,0,0,0.55);padding:8px 10px;font-size:12px;line-height:1.5;z-index:2;max-width:520px}
+  button{font-family:monospace;font-size:12px;margin:2px 3px 2px 0;cursor:pointer}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="tris"></div>
+  <div>
+    view:
+    <button data-view="side">side</button>
+    <button data-view="threeq">3/4</button>
+    <button data-view="tail">tail-on</button>
+    <button data-view="nose">nose-on</button>
+    <button data-view="pylon">pylon row</button>
+  </div>
+  <div>
+    kind:
+    <button data-kind="mk82">mk82</button>
+    <button data-kind="mk83">mk83</button>
+    <button data-kind="gbu12">gbu12</button>
+    <button data-kind="pooled">pooled asset</button>
+  </div>
+  <div>
+    fins: <button id="finsClosed">closed</button> <button id="finsOpen">open</button> <span id="finsVal"></span>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { buildBomb, bombAssets, setFins, KINDS } from './ordnance.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x7a8a92);
+scene.fog = new THREE.Fog(0x7a8a92, 40, 260);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.05, 800);
+
+const hemi = new THREE.HemisphereLight(0xdfe9f0, 0x33362e, 1.1);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2d8, 2.6);
+sun.position.set(30, 40, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left = -12; sun.shadow.camera.right = 12;
+sun.shadow.camera.top = 12; sun.shadow.camera.bottom = -12;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 100;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400,400), new THREE.MeshStandardMaterial({color:0x35424a, roughness:1}));
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -1.4;
+ground.receiveShadow = true;
+scene.add(ground);
+
+let current = new THREE.Group();
+scene.add(current);
+let bombRef = null; // for fin toggling (single-bomb views)
+let finOpen = 1;
+
+function countTris(obj){
+  let t = 0;
+  obj.traverse(o=>{
+    if(o.isMesh){
+      const g = o.geometry;
+      const n = g.index ? g.index.count : g.attributes.position.count;
+      t += n/3;
+    }
+  });
+  return Math.round(t);
+}
+
+function clearCurrent(){
+  scene.remove(current);
+  current.traverse(o=>{ if(o.isMesh && o.userData.__pooled){ /* shared geo, don't dispose */ } });
+  current = new THREE.Group();
+  scene.add(current);
+  bombRef = null;
+}
+
+let kind = 'mk82';
+let view = 'threeq';
+
+function buildScene(){
+  clearCurrent();
+  let tris = 0;
+
+  if(kind === 'pooled'){
+    // show all three kinds as InstancedMesh-style single meshes, pooled assets
+    let x = 0;
+    for(const k of KINDS){
+      const a = bombAssets(k);
+      const mesh = new THREE.Mesh(a.geometry, a.material);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.position.set(x, 0, 0);
+      mesh.rotation.y = Math.PI; // nose toward +Z is away from camera by default; flip for viewing
+      current.add(mesh);
+      tris += a.geometry.index.count/3;
+      x += 2.2;
+    }
+    document.getElementById('tris').textContent = `pooled: geometry per kind — see console (F12) for exact tri counts`;
+  } else if(view === 'pylon'){
+    // a row hanging on notional pylons
+    for(let i = 0; i < 5; i++){
+      const b = buildBomb(kind);
+      b.rotation.y = Math.PI; // nose away from viewer by default -> flip to face camera-ish
+      b.position.set((i-2)*1.15, 0, 0);
+      current.add(b);
+      tris += countTris(b);
+    }
+    document.getElementById('tris').textContent = `${kind}: ${Math.round(tris/5)} tris each, ${tris} total for the row`;
+  } else {
+    const b = buildBomb(kind);
+    bombRef = b;
+    setFins(b, finOpen);
+    current.add(b);
+    tris = countTris(b);
+    document.getElementById('tris').textContent = `${kind}: ${tris} triangles`;
+  }
+  document.getElementById('finsVal').textContent = bombRef ? `(${finOpen ? 'open' : 'closed'})` : '';
+}
+
+function setCamera(){
+  const dist = view === 'pylon' ? 9 : 3.4;
+  camera.position.set(0,0,0);
+  if(view === 'side'){
+    camera.position.set(0, 0.15, dist*0.02); // will override below
+  }
+  const targetY = 0.05;
+  switch(view){
+    case 'side':
+      camera.position.set(dist, targetY, 0.001);
+      break;
+    case 'threeq':
+      camera.position.set(dist*0.75, dist*0.35, dist*0.75);
+      break;
+    case 'tail':
+      camera.position.set(0.001, targetY, -dist);
+      break;
+    case 'nose':
+      camera.position.set(0.001, targetY, dist);
+      break;
+    case 'pylon':
+      camera.position.set(0, dist*0.25, dist);
+      break;
+  }
+  camera.lookAt(0, targetY, 0);
+}
+
+document.querySelectorAll('[data-view]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{ view = btn.dataset.view; buildScene(); setCamera(); });
+});
+document.querySelectorAll('[data-kind]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{ kind = btn.dataset.kind; buildScene(); setCamera(); });
+});
+document.getElementById('finsClosed').addEventListener('click', ()=>{ finOpen = 0; if(bombRef) setFins(bombRef, finOpen); document.getElementById('finsVal').textContent = '(closed)'; });
+document.getElementById('finsOpen').addEventListener('click', ()=>{ finOpen = 1; if(bombRef) setFins(bombRef, finOpen); document.getElementById('finsVal').textContent = '(open)'; });
+
+buildScene();
+setCamera();
+
+renderer.setAnimationLoop(()=>{
+  renderer.render(scene, camera);
+});
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
