@@ -30,10 +30,14 @@ const FUS_STATIONS = [
   [ 0.08, 0.82, 0.90, 0.68,  0   ],
   [ 0.28, 0.68, 0.70, 0.48, -0.01],
   [ 0.46, 0.54, 0.56, 0.36, -0.02],
-  [ 0.64, 0.38, 0.40, 0.26, -0.04],
-  [ 0.80, 0.22, 0.22, 0.16, -0.07],
-  [ 0.92, 0.09, 0.09, 0.08, -0.10],
-  [ 1.00, 0.01, 0.01, 0.01, -0.12],
+  // forward fuselage under the canopy/spine stays comparatively full — real
+  // radomes don't start narrowing until quite close to the tip, so a long
+  // gradual taper here is what reads as a needle nose rather than a Hornet.
+  [ 0.60, 0.50, 0.50, 0.34, -0.03],
+  [ 0.75, 0.42, 0.40, 0.28, -0.05],
+  [ 0.85, 0.28, 0.24, 0.17, -0.07],
+  [ 0.93, 0.15, 0.12, 0.09, -0.09],
+  [ 1.00, 0.04, 0.04, 0.03, -0.10],
 ];
 function fuselageAt(t){
   for(let i = 1; i < FUS_STATIONS.length; i++){
@@ -212,8 +216,11 @@ const WING_Y = 0.12, WING_THICK = 0.22;
 function wingLE(x){ return THREE.MathUtils.lerp(1.7, -1.0, (x-WING_ROOT_X)/(WING_TIP_X-WING_ROOT_X)); }
 function wingTE(x){ return THREE.MathUtils.lerp(-2.2, -1.9, (x-WING_ROOT_X)/(WING_TIP_X-WING_ROOT_X)); }
 
-const LERX_OUTLINE = [[0.85,1.6],[0.55,5.0],[0.62,2.1]];   // sweeps from wing root to beside the cockpit
-const LERX_Y = 0.20, LERX_THICK = 0.05;
+// sweeps from wing root to beside the cockpit. Each point must clear the
+// hull's own half-width at that station or the "strake" gets swallowed by
+// the fuselage loft and disappears — checked against fuselageAt() below.
+const LERX_OUTLINE = [[0.90,1.7],[0.50,5.05],[0.70,2.3]];
+const LERX_Y = 0.20, LERX_THICK = 0.07;
 
 const AIL_HINGE_Z = -1.98;
 const AILERON_OUTLINE = [[3.5,0],[5.9,0],[5.9,-0.35],[3.5,-0.35]];
@@ -258,7 +265,7 @@ const SPLITTER_X = 0.745, SPLITTER_Y = -0.08, SPLITTER_Z = 1.98;
 /* canopy fairing stations, front to back along +Z */
 const CANOPY_Z0 = 5.05, CANOPY_Z1 = 4.60, CANOPY_Z2 = 3.20, CANOPY_Z3 = 1.2;
 const CANOPY_CENTER_Z = 3.9;
-const CANOPY_R = 0.55, CANOPY_THETA = Math.PI*0.42, CANOPY_SCALE = { x:0.56, y:0.62, z:1.55 };
+const CANOPY_R = 0.55, CANOPY_THETA = Math.PI*0.42, CANOPY_SCALE = { x:0.62, y:1.05, z:1.55 };
 // the bubble's rim is a flat circle in local sphere space, so instead of
 // chasing the hull's changing height along its footprint we sink the rim
 // below the lowest hull point under it — the hull hides the join, cheaply

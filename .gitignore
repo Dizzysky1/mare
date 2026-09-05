@@ -2,3 +2,4 @@
 node_modules/
 *.log
 src/fx/_preview_*.html
+.claude/

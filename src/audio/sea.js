@@ -19,7 +19,7 @@ export function create(engine) {
   foamFilter.frequency.value = 1400;
   foamFilter.Q.value = 1.2;
   const foamGain = engine.ctx.createGain();
-  foamGain.gain.value = 0.01;
+  foamGain.gain.value = 0;   // silent until update() runs — same bug class as the swell bed
 
   foamSrc.connect(foamFilter);
   foamFilter.connect(foamGain);

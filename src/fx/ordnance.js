@@ -10,14 +10,37 @@ import * as THREE from 'three';
    Long axis +Z, nose toward +Z, origin at the centre of mass (a bit
    forward of the geometric middle, like a real filled casing) so a
    caller can quaternion-align one straight onto a velocity vector.
+
+   Two silhouette families share that contract:
+     - "bomb"     mk82/mk83/gbu12 — slick ogive nose, cylindrical
+                  body, boat-tailed fin-can. See buildOgiveKit().
+     - "canister" napalm/gas — a fat, blunt-ended tank. No ogive, no
+                  boat-tail, because these aren't aerodynamic stores;
+                  they're read at a glance, which is the whole point
+                  of giving them a different silhouette. See
+                  buildCanisterKit().
    ──────────────────────────────────────────────────────────────── */
 
-export const KINDS = ['mk82', 'mk83', 'gbu12'];
+export const KINDS = ['mk82', 'mk83', 'gbu12', 'napalm', 'gas'];
 
 const SPEC = {
   mk82:  { length:2.20, calibre:0.27, bodyColor:0x41483a, bandColor:0x737866, stripeColor:0xaa8c2c, finScale:1.00 },
   mk83:  { length:3.00, calibre:0.36, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.05 },
   gbu12: { length:3.30, calibre:0.27, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.30, seeker:true, wings:true },
+
+  /* Incendiary: thin-walled, finless — it tumbles rather than flies,
+     so there's nothing tail-can-shaped to put fins on. Bare metal
+     with a single yellow ID stripe reads as "not a bomb" instantly,
+     which matters because the player cannot outrun this one's burn. */
+  napalm: { length:3.35, calibre:0.48, style:'canister',
+             bodyColor:0x8f8a7a, bandColor:0x57544a, stripeColor:0xd1a92c },
+
+  /* Area denial: a blunt air-burst canister, small fixed stabiliser
+     fins (it doesn't need to fold anything — it isn't captive-carried
+     folded and it isn't guided). The pale hazard band is deliberately
+     the loudest colour in the whole set: reading it is the mechanic. */
+  gas: { length:2.40, calibre:0.36, style:'canister', fins:true,
+          bodyColor:0x47513e, bandColor:0x2d3226, stripeColor:0xccd766 },
 };
 
 function kindName(kind){ return SPEC[kind] ? kind : 'mk83'; }
@@ -133,13 +156,137 @@ function colourBody(geo, bodyColor){
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 }
 
+/* ── canister family: napalm / gas ──────────────────────────────
+   One LatheGeometry for the whole tank — a blunt dome at each end
+   (quarter-ellipse rings, shallower than a bomb's tangent ogive) with
+   a straight cylindrical run between them. `gas` necks the tail down
+   to a small burster-fitting stub instead of mirroring the nose dome,
+   because that end carries a fitting and fins, not a second cap. */
+function canisterDims(spec){
+  const R = spec.calibre*0.5;
+  const finned = !!spec.fins;
+  const noseCapLen = spec.calibre*0.62;
+  const tailCapLen = finned ? spec.calibre*0.30 : spec.calibre*0.52;   // gas: short taper to the fitting; napalm: flatter dome (the lozenge's blunter end)
+  const cylLen = Math.max(spec.calibre*0.5, spec.length - noseCapLen - tailCapLen);
+  return {
+    calibre:spec.calibre, R, noseCapLen, tailCapLen, cylLen,
+    length: noseCapLen + cylLen + tailCapLen,
+    fitR: R*0.26, fitLen: spec.calibre*(finned ? 0.34 : 0.22),
+    finSpan: spec.calibre*0.62, finChord: spec.calibre*0.50, finThick: Math.max(0.010, spec.calibre*0.03),
+  };
+}
+
+function domeRing(R, capLen, t, poleAtZero){
+  // t=0 is the pole (tip), t=1 is the equator (full body radius) — or
+  // the reverse, per poleAtZero. A quarter-ellipse, not a true ogive:
+  // that's what makes the cap read as blunt/rounded instead of sharp.
+  const ang = t*Math.PI/2;
+  const r = poleAtZero ? R*Math.sin(ang) : R*Math.cos(ang);
+  const dz = poleAtZero ? capLen*(1-Math.cos(ang)) : capLen*Math.sin(ang);
+  return { r, dz };
+}
+
+function canisterProfile(d, spec){
+  const rings = [0, .2, .4, .6, .75, .87, .95, 1];
+  const pts = [];
+  if(spec.fins){
+    // gas: taper from the fitting root up to full body radius — no dome
+    pts.push(new THREE.Vector2(d.fitR, 0));
+    pts.push(new THREE.Vector2(d.R*0.7, d.tailCapLen*0.6));
+    pts.push(new THREE.Vector2(d.R, d.tailCapLen));
+  } else {
+    // napalm: rounded tail dome, pole at z=0
+    for(const t of rings){
+      const { r, dz } = domeRing(d.R, d.tailCapLen, t, true);
+      pts.push(new THREE.Vector2(Math.max(0.004, r), dz));
+    }
+  }
+  pts.push(new THREE.Vector2(d.R, d.tailCapLen + d.cylLen));
+  const base = d.tailCapLen + d.cylLen;
+  for(const t of rings){
+    const { r, dz } = domeRing(d.R, d.noseCapLen, t, false);
+    pts.push(new THREE.Vector2(Math.max(0.004, r), base + dz));
+  }
+  return pts;
+}
+
+function canisterBodyGeometry(d, spec, comZ){
+  const g = toAxial(new THREE.LatheGeometry(canisterProfile(d, spec), 10));
+  g.translate(0, 0, -comZ);
+  return g;
+}
+
+/* Burster fitting (gas): a stub protruding straight off the tail,
+   on-axis — same toAxial trick as the bomb's fin adapter. */
+function tailFittingGeometry(d, comZ){
+  const g = toAxial(new THREE.CylinderGeometry(d.fitR, d.fitR*0.8, d.fitLen, 8));
+  g.translate(0, 0, -d.fitLen*0.5 - comZ);
+  return g;
+}
+
+/* Filler cap (napalm): a stub proud of the body's "top", mounted at a
+   fixed radial angle. Left in its native Y-up orientation on purpose
+   — at that mount point the outward surface normal already points
+   along +Y, so the cylinder's own axis needs no extra rotation. */
+function fillerCapGeometry(d, capZ){
+  const g = new THREE.CylinderGeometry(d.fitR*1.15, d.fitR*1.05, d.fitLen, 8);
+  g.translate(0, d.R + d.fitLen*0.5, capZ);
+  return g;
+}
+
+/* Canister colouring: mostly a flat body tone, plus whatever band
+   tells the two kinds apart at a glance. `gas` gets one loud hazard
+   band because reading it in the second before it bursts is the
+   point; `napalm` gets a thin ID stripe near each cap, the way a
+   plain unpainted canister would carry a stencilled marking. */
+function colourCanister(geo, d, spec){
+  const pos = geo.attributes.position;
+  const col = new Float32Array(pos.count*3);
+  const cB = new THREE.Color(spec.bodyColor), cBand = new THREE.Color(spec.bandColor), cStripe = new THREE.Color(spec.stripeColor), c = new THREE.Color();
+  const total = d.length;
+  for(let i = 0; i < pos.count; i++){
+    const t = THREE.MathUtils.clamp(pos.getZ(i)/total, 0, 1);
+    if(spec.fins){
+      c.copy(cB);
+      if(t >= 0.30 && t <= 0.48) c.copy(cStripe);        // the hazard band
+      else if(t < 0.08) c.copy(cBand);                    // dark fitting root
+    } else {
+      c.copy(cB).lerp(cBand, 0.16*Math.abs(Math.sin(t*Math.PI)));  // faint scorched-metal shading
+      if((t >= 0.09 && t <= 0.12) || (t >= 0.88 && t <= 0.91)) c.copy(cStripe);
+    }
+    col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+function buildCanisterKit(kind, spec){
+  const d = canisterDims(spec);
+  const comZ = d.length*0.50;                    // roughly uniform-density tank — CoM near geometric centre
+
+  const bodyGeo = canisterBodyGeometry(d, spec, comZ);
+  colourCanister(bodyGeo, d, spec);
+  const axialFitGeo = spec.fins ? tailFittingGeometry(d, comZ) : null;
+  const radialFitGeo = spec.fins ? null : fillerCapGeometry(d, d.tailCapLen + d.cylLen*0.5 - comZ);
+  const finGeo = spec.fins ? finGeometry(d.finSpan, d.finChord, d.finThick) : null;
+  const lugGeo = new THREE.BoxGeometry(d.calibre*0.10, d.calibre*0.16, d.calibre*0.16);
+
+  const bodyMat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness: spec.fins ? 0.70 : 0.32, metalness: spec.fins ? 0.12 : 0.55 });
+  const fitMat = new THREE.MeshStandardMaterial({ color:0x24261f, roughness:0.5, metalness:0.6 });
+  const finMat = new THREE.MeshStandardMaterial({ color:0x2f332e, roughness:0.72, metalness:0.25 });
+  const lugMat = fitMat;
+
+  return {
+    spec, d, comZ, style:'canister',
+    bodyGeo, axialFitGeo, radialFitGeo, finGeo, lugGeo,
+    bodyMat, fitMat, finMat, lugMat,
+    finCount: spec.fins ? 3 : 0,
+    finMountR: d.R*0.92, finMountZ: d.tailCapLen*0.55 - comZ,
+    lugZ: [d.tailCapLen + d.cylLen*0.32 - comZ, d.tailCapLen + d.cylLen*0.68 - comZ],
+  };
+}
+
 /* ── shared per-kind geometry/material kit, built once ─────────── */
-const _kits = new Map();
-function getKit(kind){
-  kind = kindName(kind);
-  let kit = _kits.get(kind);
-  if(kit) return kit;
-  const spec = SPEC[kind];
+function buildOgiveKit(kind, spec){
   const d = dims(spec);
   const comZ = d.bodyLen - 0.42*spec.length;      // CoM forward of geometric centre — filled nose, light fins
 
@@ -159,14 +306,24 @@ function getKit(kind){
   const lugMat  = new THREE.MeshStandardMaterial({ color:0x24261f, roughness:0.5, metalness:0.6 });
   const seekerMat = spec.seeker ? new THREE.MeshStandardMaterial({ color:0x14161a, roughness:0.32, metalness:0.2 }) : null;
 
-  kit = {
-    spec, d, comZ,
+  return {
+    spec, d, comZ, style:'bomb',
     noseGeo, bodyGeo, adapterGeo, finGeo, lugGeo, wingGeo, seekerGeo,
     noseMat, bodyMat, tailMat, lugMat, seekerMat,
     finMountR: d.tailR*0.90, finMountZ: -d.adapterLen*0.05 - comZ,
     wingMountR: d.R, wingMountZ: d.boattailLen + d.cylLen*0.42 - comZ,
     lugZ: [d.boattailLen + d.cylLen*0.30 - comZ, d.boattailLen + d.cylLen*0.66 - comZ],
   };
+}
+
+const _kits = new Map();
+function getKit(kind){
+  kind = kindName(kind);
+  let kit = _kits.get(kind);
+  if(kit) return kit;
+  const spec = SPEC[kind];
+  kit = spec.style === 'canister' ? buildCanisterKit(kind, spec) : buildOgiveKit(kind, spec);
+  kit.kind = kind;
   _kits.set(kind, kit);
   return kit;
 }
@@ -190,13 +347,10 @@ function addFinSet(group, geo, mat, mountR, mountZ, n, out){
   }
 }
 
-/* ── the detailed, animatable store ────────────────────────────── */
-export function buildBomb(kind = 'mk83'){
-  kind = kindName(kind);
-  const kit = getKit(kind);
+function buildOgiveMesh(kit){
   const { d } = kit;
   const g = new THREE.Group();
-  g.name = `bomb_${kind}`;
+  g.name = `bomb_${kit.kind}`;
 
   const nose = new THREE.Mesh(kit.noseGeo, kit.noseMat); nose.castShadow = true; g.add(nose);
   const body = new THREE.Mesh(kit.bodyGeo, kit.bodyMat); body.castShadow = true; g.add(body);
@@ -211,7 +365,7 @@ export function buildBomb(kind = 'mk83'){
 
   const fins = { pivots:[], base:[], sign:[], fold:FOLD };
   addFinSet(g, kit.finGeo, kit.tailMat, kit.finMountR, kit.finMountZ, 4, fins);
-  if(kit.wingGeo) addFinSet(g, kit.wingGeo, kit.tailMat, kit.wingMountR, kit.wingMountZ, 2, fins);
+  if(kit.wingGeo) addFinSet(g, kit.wingGeo, kit.wingMountR, kit.wingMountZ, kit.tailMat, 2, fins);
 
   if(kit.seekerGeo){
     const seeker = new THREE.Mesh(kit.seekerGeo, kit.seekerMat);
@@ -220,21 +374,94 @@ export function buildBomb(kind = 'mk83'){
   }
 
   g.userData.fins = fins;
-  g.userData.kind = kind;
+  g.userData.kind = kit.kind;
   g.userData.length = kit.spec.length;
   g.userData.calibre = kit.spec.calibre;
   return g;
 }
 
+/* Canisters have nothing to fold: napalm has no fins at all, and gas's
+   stabilisers are small and fixed (it's dumb and unguided — nothing
+   needs to hide flush against a rail). So no `userData.fins` here,
+   which makes setFins() a safe no-op for both by the existing guard. */
+function buildCanisterMesh(kit){
+  const { spec, d } = kit;
+  const g = new THREE.Group();
+  g.name = `bomb_${kit.kind}`;
+
+  // napalm tumbles end over end rather than flying nose-first, so its
+  // meshes live under a spin root a caller can drive with setTumble()
+  // without disturbing the outer Group's own velocity-aligned pose.
+  const finless = !spec.fins;
+  const visual = finless ? new THREE.Group() : g;
+  if(finless) g.add(visual);
+
+  const body = new THREE.Mesh(kit.bodyGeo, kit.bodyMat); body.castShadow = true; visual.add(body);
+
+  if(spec.fins){
+    const fit = new THREE.Mesh(kit.axialFitGeo, kit.fitMat); fit.castShadow = true; visual.add(fit);
+    for(let i = 0; i < kit.finCount; i++){
+      const theta = (i/kit.finCount)*Math.PI*2;
+      const fin = new THREE.Mesh(kit.finGeo, kit.finMat);
+      fin.position.set(Math.cos(theta)*kit.finMountR, Math.sin(theta)*kit.finMountR, kit.finMountZ);
+      fin.rotation.z = theta;
+      fin.castShadow = true;
+      visual.add(fin);
+    }
+  } else {
+    const cap = new THREE.Mesh(kit.radialFitGeo, kit.fitMat); cap.castShadow = true; visual.add(cap);
+  }
+
+  for(const z of kit.lugZ){
+    const lug = new THREE.Mesh(kit.lugGeo, kit.lugMat);
+    lug.position.set(0, d.R*0.92, z);
+    lug.castShadow = true;
+    visual.add(lug);
+  }
+
+  g.userData.kind = kit.kind;
+  g.userData.length = spec.length;
+  g.userData.calibre = spec.calibre;
+  if(finless) g.userData.tumbleRoot = visual;
+  return g;
+}
+
+/* ── the detailed, animatable store ────────────────────────────── */
+export function buildBomb(kind = 'mk83'){
+  kind = kindName(kind);
+  const kit = getKit(kind);
+  return kit.style === 'canister' ? buildCanisterMesh(kit) : buildOgiveMesh(kit);
+}
+
 /* Fold (0) ↔ deploy (1) the tail fins — and, on the GBU, the mid-body
    wings too, since they share the same pivot mechanism. Reads/writes
-   plain numbers only, so it's safe to call every frame while falling. */
+   plain numbers only, so it's safe to call every frame while falling.
+   Stores with nothing to fold (napalm, gas) simply have no fin rig,
+   so this is a safe no-op for them. */
 export function setFins(bombObject, open){
   const fx = bombObject && bombObject.userData && bombObject.userData.fins;
   if(!fx) return;
   const o = THREE.MathUtils.clamp(open, 0, 1);
   for(let i = 0; i < fx.pivots.length; i++)
     fx.pivots[i].rotation.z = fx.base[i] + fx.sign[i]*fx.fold*(1-o);
+}
+
+/* A finless store (napalm) tumbles end over end instead of flying
+   nose-first. `phase` is radians about the pitch axis, applied to an
+   inner spin root kept separate from the object's own transform, so
+   a caller is free to quaternion-align the outer Group onto velocity
+   (as every other store expects) and layer the tumble on top. No-op,
+   allocation-free, for anything that doesn't tumble. */
+export function setTumble(obj, phase){
+  const root = obj && obj.userData && obj.userData.tumbleRoot;
+  if(!root) return;
+  root.rotation.x = phase;
+}
+
+/* A short label for the HUD — lets the player's eye (and any warning
+   UI) key off silhouette rather than the internal kind string. */
+export function storeSilhouette(kind){
+  return SPEC[kindName(kind)].style === 'canister' ? 'canister' : 'bomb';
 }
 
 /* ── cheap pooled variant: one geometry, one material ──────────── */
@@ -287,6 +514,63 @@ function mergeGeoms(parts){
   return g;
 }
 
+function buildOgiveAssetGeo(kit){
+  const parts = [
+    { geo:kit.noseGeo, color:0xffffff },
+    { geo:kit.bodyGeo, color:0xffffff },
+    { geo:kit.adapterGeo, color:0x2f332e },
+  ];
+  const temps = [];
+  for(const z of kit.lugZ){
+    const lg = kit.lugGeo.clone().translate(0, kit.d.R*0.92, z);
+    temps.push(lg); parts.push({ geo:lg, color:0x24261f });
+  }
+  for(let i = 0; i < 4; i++){
+    const theta = (i/4)*Math.PI*2;
+    const fg = bakedFin(kit.finGeo, kit.finMountR, kit.finMountZ, theta);
+    temps.push(fg); parts.push({ geo:fg, color:0x2f332e });
+  }
+  if(kit.wingGeo){
+    for(let i = 0; i < 2; i++){
+      const theta = i*Math.PI;
+      const wg = bakedFin(kit.wingGeo, kit.wingMountR, kit.wingMountZ, theta);
+      temps.push(wg); parts.push({ geo:wg, color:0x2f332e });
+    }
+  }
+  if(kit.seekerGeo) parts.push({ geo:kit.seekerGeo, color:0x14161a });
+
+  const geo = mergeGeoms(parts);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  for(const t of temps) t.dispose();
+  return geo;
+}
+
+function buildCanisterAssetGeo(kit){
+  const { spec, d } = kit;
+  const parts = [{ geo:kit.bodyGeo, color:0xffffff }];   // vertex colours already baked in
+  const temps = [];
+  if(spec.fins){
+    parts.push({ geo:kit.axialFitGeo, color:0x24261f });
+    for(let i = 0; i < kit.finCount; i++){
+      const theta = (i/kit.finCount)*Math.PI*2;
+      const fg = bakedFin(kit.finGeo, kit.finMountR, kit.finMountZ, theta);
+      temps.push(fg); parts.push({ geo:fg, color:0x2f332e });
+    }
+  } else {
+    parts.push({ geo:kit.radialFitGeo, color:0x24261f });
+  }
+  for(const z of kit.lugZ){
+    const lg = kit.lugGeo.clone().translate(0, d.R*0.92, z);
+    temps.push(lg); parts.push({ geo:lg, color:0x24261f });
+  }
+  const geo = mergeGeoms(parts);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  for(const t of temps) t.dispose();
+  return geo;
+}
+
 const _assetGeo = new Map();
 const POOL_MAT = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.8, metalness:0.12 });
 
@@ -298,34 +582,7 @@ export function bombAssets(kind = 'mk83'){
   const kit = getKit(kind);
   let geo = _assetGeo.get(kind);
   if(!geo){
-    const parts = [
-      { geo:kit.noseGeo, color:0xffffff },
-      { geo:kit.bodyGeo, color:0xffffff },
-      { geo:kit.adapterGeo, color:0x2f332e },
-    ];
-    const temps = [];
-    for(const z of kit.lugZ){
-      const lg = kit.lugGeo.clone().translate(0, kit.d.R*0.92, z);
-      temps.push(lg); parts.push({ geo:lg, color:0x24261f });
-    }
-    for(let i = 0; i < 4; i++){
-      const theta = (i/4)*Math.PI*2;
-      const fg = bakedFin(kit.finGeo, kit.finMountR, kit.finMountZ, theta);
-      temps.push(fg); parts.push({ geo:fg, color:0x2f332e });
-    }
-    if(kit.wingGeo){
-      for(let i = 0; i < 2; i++){
-        const theta = i*Math.PI;
-        const wg = bakedFin(kit.wingGeo, kit.wingMountR, kit.wingMountZ, theta);
-        temps.push(wg); parts.push({ geo:wg, color:0x2f332e });
-      }
-    }
-    if(kit.seekerGeo) parts.push({ geo:kit.seekerGeo, color:0x14161a });
-
-    geo = mergeGeoms(parts);
-    geo.computeBoundingBox();
-    geo.computeBoundingSphere();
-    for(const t of temps) t.dispose();
+    geo = kit.style === 'canister' ? buildCanisterAssetGeo(kit) : buildOgiveAssetGeo(kit);
     _assetGeo.set(kind, geo);
   }
   return { geometry:geo, material:POOL_MAT, length:kit.spec.length, calibre:kit.spec.calibre };
