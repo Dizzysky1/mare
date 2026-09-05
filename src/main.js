@@ -196,7 +196,14 @@ addEventListener('keydown', e => {
     if(e.code === 'KeyQ') pilotKeys.rudderL = 1;
     if(e.code === 'KeyR') pilotKeys.rudderR = 1;
     if(e.code === 'KeyX') pilotKeys.airbrake = 1;
-    if(e.code === 'KeyF'){ pilotSeat.release(); e.preventDefault(); }
+    if(e.code === 'KeyF'){
+      // The pilot must watch their own store fall too. sendDrop only tells
+      // the OTHER end; without this the bomb exists on the sailor's screen
+      // and nowhere on the pilot's, which is exactly backwards.
+      const rel = pilotSeat.release();
+      if(rel && strikes) strikes.dropStore(rel.munitionId, rel.pos, rel.vel);
+      e.preventDefault();
+    }
     if(e.code === 'KeyV') pilotSeat.toggleView();
     // Reset the altimeter to the pressure here and now. Nothing forces
     // you to, and nothing tells you when it has gone stale.
