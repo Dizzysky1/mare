@@ -84,6 +84,15 @@ const CM_ALPHA = 0.85;   // positive: nose-up alpha -> nose-down moment (restori
 const CM0 = -0.033;
 const CM_Q = -14;        // pitch-rate damping
 const CM_DE = -0.40;     // elevator: +pitch input -> nose up
+/* Trim authority. CM0 alone fixes the trimmed angle of attack, which
+   means hands-off level flight exists at exactly ONE airspeed (~188 m/s
+   TAS at 2000 m for this airframe) and anywhere above it the aircraft
+   bunts upward — measured hands-off at 220 m/s it climbed to 15 km. A
+   real aircraft has a trim wheel for precisely this, so `controls.trim`
+   biases the pitching moment the same way the stabilator's rigged
+   incidence does. Sized at a third of full elevator authority: enough to
+   trim out the whole usable speed range, not enough to fly on. */
+const CM_TRIM = -0.13;
 // Dihedral effect: restoring roll from sideslip. POSITIVE in these axes, and
 // that sign is the whole ballgame. beta = asin(vBody.x/V) is positive when the
 // jet is moving toward its own right wing, i.e. the relative wind is on the
@@ -398,7 +407,9 @@ export class Aircraft {
     const yawCtrl = clamp(safe(controls?.yaw), -1, 1);
 
     const cmAlphaEff = CM_ALPHA * (1 - STALL_CM_FADE * stallProgress);
-    const Cpitch = CM0 + cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
+    const trimCtrl = clamp(safe(controls?.trim), -1, 1);
+    const Cpitch = CM0 + CM_TRIM * trimCtrl
+                 + cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
     // sin(bank), measured unambiguously. The body right-axis' vertical
     // component alone is sin(bank)*cos(pitch), not sin(bank): it collapses to
     // zero in a vertical climb whatever the bank is, and read back through

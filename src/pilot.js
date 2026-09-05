@@ -56,11 +56,14 @@ export class Pilot {
       atmosphere: opts.atmosphere, weather: opts.weather, field: opts.field,
       pos: opts.pos || { x: 0, y: 1200, z: -6000 },
       heading: opts.heading ?? 0,
-      speed: opts.speed ?? 210,
+      // Trimmed cruise for this airframe is about 188 m/s TAS at altitude.
+      // Spawning faster than that means spawning out of trim, which reads
+      // as the aircraft fighting you before you have touched anything.
+      speed: opts.speed ?? 188,
       loadout: opts.loadout || 'mixed',
     });
 
-    this.controls = { pitch:0, roll:0, yaw:0, throttle:0.72, burner:0, airbrake:0 };
+    this.controls = { pitch:0, roll:0, yaw:0, throttle:0.72, burner:0, airbrake:0, trim:0 };
     this.view = 'cockpit';          // 'cockpit' | 'chase'
     this.gearOfInterest = 0;
 
@@ -118,6 +121,10 @@ export class Pilot {
     // Burner only bites at the top of the throttle range, as it does.
     t.burner = (input.sprint && t.throttle > 0.98) ? 1 : 0;
     t.airbrake = keys?.airbrake ? 1 : 0;
+    // The trim wheel. Held, not tapped — it is a slow control, and getting
+    // it right is what lets you take your hand off the stick.
+    if(keys?.trimUp)   t.trim = THREE.MathUtils.clamp(t.trim + dt*0.32, -1, 1);
+    if(keys?.trimDown) t.trim = THREE.MathUtils.clamp(t.trim - dt*0.32, -1, 1);
   }
 
   release(){
@@ -267,6 +274,7 @@ export class Pilot {
       fuelPct: THREE.MathUtils.clamp(this.ac.fuel/this.ac.fuelCapacity, 0, 1),
       stores: this.ac.storesCount,
       g: i.g, aoa: i.aoa,
+      trim: this.controls.trim,
       stalled: this.ac.stalled,
       mach: this.ac.trueAirspeed/(this.ac.atmosphere?.speedOfSound || 340),
       // Outside air temperature is a real gauge and the one that tells a

@@ -196,6 +196,8 @@ addEventListener('keydown', e => {
     if(e.code === 'KeyQ') pilotKeys.rudderL = 1;
     if(e.code === 'KeyR') pilotKeys.rudderR = 1;
     if(e.code === 'KeyX') pilotKeys.airbrake = 1;
+    if(e.code === 'BracketLeft')  pilotKeys.trimDown = 1;
+    if(e.code === 'BracketRight') pilotKeys.trimUp = 1;
     if(e.code === 'KeyF'){
       // The pilot must watch their own store fall too. sendDrop only tells
       // the OTHER end; without this the bomb exists on the sailor's screen
@@ -230,6 +232,8 @@ addEventListener('keyup', e => {
   if(e.code === 'KeyQ') pilotKeys.rudderL = 0;
   if(e.code === 'KeyR') pilotKeys.rudderR = 0;
   if(e.code === 'KeyX') pilotKeys.airbrake = 0;
+  if(e.code === 'BracketLeft')  pilotKeys.trimDown = 0;
+  if(e.code === 'BracketRight') pilotKeys.trimUp = 0;
 });
 addEventListener('blur', () => { for(const k in input) input[k] = 0;
   for(const k in pilotKeys) pilotKeys[k] = 0; });
@@ -433,7 +437,7 @@ function startMode(key, mpWorld){
     pilotSeat = new Pilot({
       scene, field, camera, session, atmosphere:atmos, weather,
       onToast:(t,k)=>ui.toast(t,k),
-      pos:{ x:0, y:1500, z:-7000 }, heading:0, speed:230, loadout:'mixed',
+      pos:{ x:0, y:1500, z:-7000 }, heading:0, speed:188, loadout:'mixed',
     });
     player.setState('fly');
     player.pos.set(0, 1500, -7000);
@@ -478,7 +482,7 @@ function startMode(key, mpWorld){
   if(mode.pilot){
     // The controls are not the sailing controls and nothing else says so.
     ui.toast('W/S pitch · A/D roll · Q/R rudder · Space and Ctrl throttle', 'dim');
-    setTimeout(() => ui.toast('F releases · V view · X airbrake · B resets the altimeter', 'dim'), 5200);
+    setTimeout(() => ui.toast('F releases · V view · X airbrake · [ ] trim · B resets the altimeter', 'dim'), 5200);
     setTimeout(() => ui.toast('Nothing will tell you which boat is the person.', 'bad'), 11000);
   } else ui.toast(mode.spectator
     ? 'Nothing to do. That is the point.'
@@ -733,7 +737,7 @@ function closeChart(){
    broker a match. The sailor generates an invite, the pilot answers it,
    and from then on the two browsers talk directly. */
 
-const pilotKeys = { rudderL:0, rudderR:0, airbrake:0 };
+const pilotKeys = { rudderL:0, rudderR:0, airbrake:0, trimUp:0, trimDown:0 };
 
 const mel = id => document.getElementById(id);
 function multiStatus(t){ const e = mel('multi-status'); if(e) e.textContent = t || ''; }
