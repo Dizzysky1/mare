@@ -461,7 +461,7 @@ function startMode(key, mpWorld){
   ui.el.menu.classList.add('hidden');
   ui.el.over.classList.add('hidden');
   ui.el.hud.classList.remove('hidden');
-  ui.setStats(survival, mode.survival);
+  ui.setStats(survival, mode.survival && !mode.pilot);
   ui.el.crosshair.style.display = mode.spectator ? 'none' : '';
   state = 'play';
   gov.q = 10; gov.cooldown = 2.5; applyQuality();
@@ -587,9 +587,11 @@ function updateNetStatus(){
   const on = !!(net && session && state === 'play');
   e.classList.toggle('hidden', !on);
   if(!on) return;
-  e.textContent = net.connected
-    ? `${mode.multiplayer === 'pilot' ? 'PILOT' : 'SAILOR'} · ${Math.round(net.rtt)} ms`
-    : 'link lost';
+  const rtt = Math.round(net.rtt);
+  e.classList.remove('ok','warn','bad');
+  if(!net.connected){ e.classList.add('bad'); e.textContent = 'link lost'; return; }
+  e.classList.add(rtt > 220 ? 'warn' : 'ok');
+  e.textContent = `${mode.multiplayer === 'pilot' ? 'PILOT' : 'SAILOR'} · ${rtt} ms`;
 }
 
 /* ── the canopy ─────────────────────────────────────────────── */
@@ -632,6 +634,8 @@ function updatePilotHud(){
               : r.inCloud ? 'IMC' : '';
     warn.textContent = msg;
     warn.classList.toggle('hidden', !msg);
+    warn.classList.toggle('crit', r.stalled);          // red for the one that kills you
+    pel('pi-fuel-bar')?.parentElement?.classList.toggle('low', r.fuelPct < 0.12);
   }
 }
 
@@ -857,6 +861,8 @@ function disposeRemoteJet(){
 
 mel('btn-multi')?.addEventListener('click', openMulti);
 mel('btn-multi-close')?.addEventListener('click', closeMulti);
+for(const id of ['btn-host-back','btn-join-back'])
+  mel(id)?.addEventListener('click', () => { leaveSession(); multiError(''); multiStatus(''); multiStep('multi-choose'); });
 mel('btn-be-sailor')?.addEventListener('click', hostGame);
 mel('btn-be-pilot')?.addEventListener('click', () => { multiError(''); multiStep('multi-join'); });
 mel('btn-make-answer')?.addEventListener('click', joinGame);
