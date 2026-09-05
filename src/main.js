@@ -125,6 +125,8 @@ const post = new Post(renderer, scene, camera, maxTier);
 
 let world = null, fleet = null, gulls = null, playerShip = null, player = null, creative = null;
 let quest = null, survival = null, mode = MODES.easy, strikes = null;
+/* two-player session state */
+let net = null, session = null, pilotSeat = null, remoteJet = null;
 let state = 'loading';           // loading | menu | play | pause | over
 let hour = 16.6, storm = 0, wind = new THREE.Vector3(1,0,0.4), windSpeed = 6;
 let sunInfo = { night:0, elevation:0.5, flash:0 };
@@ -190,6 +192,16 @@ const KEYS = {
 addEventListener('keydown', e => {
   if(creative && creative.active && creative.handleKey(e.code, true)) return;
   if(KEYS[e.code]){ input[KEYS[e.code]] = 1; if(e.code === 'Space') e.preventDefault(); }
+  if(state === 'play' && mode.pilot && pilotSeat){
+    if(e.code === 'KeyQ') pilotKeys.rudderL = 1;
+    if(e.code === 'KeyR') pilotKeys.rudderR = 1;
+    if(e.code === 'KeyX') pilotKeys.airbrake = 1;
+    if(e.code === 'KeyF'){ pilotSeat.release(); e.preventDefault(); }
+    if(e.code === 'KeyV') pilotSeat.toggleView();
+    // Reset the altimeter to the pressure here and now. Nothing forces
+    // you to, and nothing tells you when it has gone stale.
+    if(e.code === 'KeyB') pilotSeat.setAltimeter(atmos?.pressure ?? 1013.25);
+  }
   if(state === 'play'){
     if(e.code === 'KeyE') interact();
     if(e.code === 'KeyV' && player) player.thirdPerson = !player.thirdPerson;
@@ -208,8 +220,12 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => {
   if(creative && creative.active && creative.handleKey(e.code, false)) return;
   if(KEYS[e.code]) input[KEYS[e.code]] = 0;
+  if(e.code === 'KeyQ') pilotKeys.rudderL = 0;
+  if(e.code === 'KeyR') pilotKeys.rudderR = 0;
+  if(e.code === 'KeyX') pilotKeys.airbrake = 0;
 });
-addEventListener('blur', () => { for(const k in input) input[k] = 0; });
+addEventListener('blur', () => { for(const k in input) input[k] = 0;
+  for(const k in pilotKeys) pilotKeys[k] = 0; });
 
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
@@ -277,6 +293,9 @@ async function boot(){
       if(survival.health <= 1e-6){ survival.health = 0; survival.dead = true; survival.cause = why; }
       else ui.toast(why, 'bad');
     },
+    impact: (point, dist) => {
+      if(session && mode.multiplayer === 'sailor') session.sendHit('store', dist < 70);
+    },
     // A near miss is violent enough to take spectacles off a face — the
     // mechanism is being knocked about, not the pressure itself acting on
     // the lens, which is nowhere near strong enough to matter.
@@ -333,8 +352,15 @@ document.getElementById('btn-quit').addEventListener('click', toMenu);
 document.getElementById('btn-menu').addEventListener('click', toMenu);
 document.getElementById('btn-again').addEventListener('click', () => startMode(mode.key));
 
-function startMode(key){
+function startMode(key, mpWorld){
   mode = MODES[key];
+  /* In a two-player game the sailor decides the world and the pilot is
+     told it, so both are sailing and flying over the same sea rather
+     than two plausible-looking different ones. */
+  if(mpWorld) mode = Object.assign({}, mode, {
+    hour: mpWorld.hour, swell: mpWorld.swell, windDeg: mpWorld.windDeg,
+    windSpeed: mpWorld.windSpeed, storm: mpWorld.storm, chop: mpWorld.chop,
+  });
   audio.start(); audio.resume();
 
   // the sea itself
@@ -356,7 +382,10 @@ function startMode(key){
   elapsed = 0;
 
   weather = new Weather({
-    seed: 1337 + Object.keys(MODES).indexOf(mode.key),
+    // Weather needs no synchronisation at all: it is a pure function of
+    // seed and elapsed time, so both clients drift through the same front
+    // at the same moment without a single byte crossing the wire.
+    seed: mpWorld ? mpWorld.seed : 1337 + Object.keys(MODES).indexOf(mode.key),
     climate: mode.hostile ? 'hostile' : 'mediterranean',
     storminess: mode.storminess ?? mode.storm,
     windDeg: mode.windDeg, windSpeed: mode.windSpeed,
@@ -376,7 +405,8 @@ function startMode(key){
   if(playerShip){ scene.remove(playerShip.group); scene.remove(playerShip.spray); playerShip = null; }
 
   // One number defines the entire run: fleet, gulls, jars, sorties.
-  runSeed = (Date.now() ^ (Math.random()*0xffffffff)) >>> 0;
+  runSeed = mpWorld ? (mpWorld.seed >>> 0)
+                    : ((Date.now() ^ (Math.random()*0xffffffff)) >>> 0);
   reseedWorld(runSeed);
 
   // A different person each run: their eyes, their constitution and what
@@ -390,7 +420,18 @@ function startMode(key){
   chartEl.classList.add('hidden');
   survival = new Survival(mode);
 
-  if(mode.spectator){
+  if(mode.pilot){
+    // No hull, no body, no needs. One aircraft, one tank, one sortie.
+    disposePilot();
+    pilotSeat = new Pilot({
+      scene, field, camera, session, atmosphere:atmos, weather,
+      onToast:(t,k)=>ui.toast(t,k),
+      pos:{ x:0, y:1500, z:-7000 }, heading:0, speed:230, loadout:'mixed',
+    });
+    player.setState('fly');
+    player.pos.set(0, 1500, -7000);
+    ui.setObjective(null);
+  } else if(mode.spectator){
     player.setState('fly');
     player.pos.set(-40, 26, 90);
     player.yaw = 2.6; player.pitch = -0.12;
@@ -538,6 +579,62 @@ function updateVision(dt){
   u.uTexel.value.set(1/Math.max(1, post.w||innerWidth), 1/Math.max(1, post.h||innerHeight));
 }
 
+/* A quiet caption, not a HUD element: whether the link is up and how
+   long the round trip is. Nothing about the other player. */
+function updateNetStatus(){
+  const e = document.getElementById('net-status');
+  if(!e) return;
+  const on = !!(net && session && state === 'play');
+  e.classList.toggle('hidden', !on);
+  if(!on) return;
+  e.textContent = net.connected
+    ? `${mode.multiplayer === 'pilot' ? 'PILOT' : 'SAILOR'} · ${Math.round(net.rtt)} ms`
+    : 'link lost';
+}
+
+/* ── the canopy ─────────────────────────────────────────────── */
+/* The pilot looks through glass, not through nothing. Rain, condensation
+   and cloud ride on top of whatever the pilot's own eyes are already
+   doing to the image, because they are a separate surface. */
+function updateCanopy(){
+  if(!pilotSeat || !mode.pilot) return;
+  const c = pilotSeat.canopy, u = post.comp.uniforms;
+  u.uVisionOn.value = 1;
+  u.uDroplets.value = Math.max(u.uDroplets.value, c.droplets);
+  u.uFog.value = THREE.MathUtils.clamp(u.uFog.value + c.fog*0.8 + c.veil*0.7, 0, 1);
+  // Inside cloud there is simply nothing to see, and the instruments are
+  // the only thing left. This is the mechanic, not an effect.
+  u.uBlur.value = Math.max(u.uBlur.value, c.inCloud*3.2);
+}
+
+/* ── the instrument panel ───────────────────────────────────── */
+const pel = id => document.getElementById(id);
+function updatePilotHud(){
+  const on = !!(pilotSeat && mode.pilot && state === 'play');
+  pel('pilot-hud')?.classList.toggle('hidden', !on);
+  if(!on) return;
+  const r = pilotSeat.readout();
+  const set = (id, v) => { const e = pel(id); if(e) e.textContent = v; };
+  set('pi-alt', Math.round(r.altitude));
+  set('pi-ias', r.ias);
+  set('pi-hdg', String(Math.round(r.heading)).padStart(3,'0'));
+  set('pi-vsi', r.vsi);
+  set('pi-fuel', r.fuel);
+  set('pi-stores', r.stores);
+  set('pi-g', r.g.toFixed(1));
+  set('pi-aoa', r.aoa.toFixed(1));
+  const bar = pel('pi-fuel-bar');
+  if(bar) bar.style.setProperty('--v', (r.fuelPct*100).toFixed(0) + '%');
+  const warn = pel('pi-warn');
+  if(warn){
+    const msg = r.stalled ? 'STALL'
+              : r.fuelPct < 0.12 ? 'BINGO FUEL'
+              : r.inCloud ? 'IMC' : '';
+    warn.textContent = msg;
+    warn.classList.toggle('hidden', !msg);
+  }
+}
+
 /* ── the wake ───────────────────────────────────────────────── */
 /* A rolling record of where the hull has been, handed to the water
    shader as foam. Sampled by distance travelled rather than by time,
@@ -614,6 +711,163 @@ function closeChart(){
 }
 
 /* A sandbox: free flight, spawn anything, drive the sky by hand. */
+/* ── two players ─────────────────────────────────────────────
+   Connection is peer-to-peer with the signalling done by hand, because
+   the game is static files on GitHub Pages and there is no server to
+   broker a match. The sailor generates an invite, the pilot answers it,
+   and from then on the two browsers talk directly. */
+
+const pilotKeys = { rudderL:0, rudderR:0, airbrake:0 };
+
+const mel = id => document.getElementById(id);
+function multiStatus(t){ const e = mel('multi-status'); if(e) e.textContent = t || ''; }
+function multiError(t){
+  const e = mel('multi-error'); if(!e) return;
+  e.textContent = t || ''; e.classList.toggle('hidden', !t);
+}
+function multiStep(which){
+  for(const id of ['multi-choose','multi-host','multi-join'])
+    mel(id)?.classList.toggle('hidden', id !== which);
+}
+function openMulti(){
+  multiError(''); multiStatus(''); multiStep('multi-choose');
+  mel('multi')?.classList.remove('hidden');
+}
+function closeMulti(){ mel('multi')?.classList.add('hidden'); }
+
+function makeNet(){
+  leaveSession();
+  net = new Net({
+    onStatus: s => multiStatus(s),
+    onClose: why => {
+      ui.toast('The link to the other player has dropped.', 'bad');
+      multiStatus('disconnected — ' + why);
+    },
+  });
+  return net;
+}
+
+/* The sailor owns the world, so the sailor is the one who decides it and
+   sends it. The pilot rebuilds the identical sea from that seed. */
+function sessionWorld(){
+  return {
+    seed: runSeed >>> 0, hour, swell: mode.swell, windDeg: mode.windDeg,
+    windSpeed: mode.windSpeed, storm: mode.storm, chop: mode.chop,
+  };
+}
+
+function beginSession(role){
+  session = new Session({
+    net, role,
+    onToast: (t,k) => ui.toast(t,k),
+    onWorld: w => {
+      // pilot only: the sailor has told us which sea this is
+      if(role !== 'pilot') return;
+      closeMulti();
+      startMode('mpPilot', w);
+      ui.toast('You are airborne. Somewhere down there is a person.', 'dim');
+    },
+    onDrop: d => {
+      // Both ends fly the same store from the same release conditions.
+      if(strikes) strikes.dropStore(d.id, { x:d.p[0], y:d.p[1], z:d.p[2] },
+                                          { x:d.v[0], y:d.v[1], z:d.v[2] });
+      if(role === 'sailor') ui.toast('Something has come off it.', 'bad');
+    },
+    onHit: h => {
+      // The pilot's only feedback, and it is the sailor's word for it.
+      if(role !== 'pilot') return;
+      ui.toast(h.near ? 'Close. Something down there moved.' : 'Nothing. The sea took it.',
+               h.near ? 'bad' : 'dim');
+    },
+  });
+  if(pilotSeat) pilotSeat.session = session;
+}
+
+async function hostGame(){
+  try {
+    multiError(''); multiStep('multi-host'); multiStatus('preparing invite…');
+    makeNet();
+    const code = await net.host();
+    mel('multi-offer').value = code;
+    multiStatus('Send that to your pilot, then paste their reply below.');
+    beginSession('sailor');
+    net.onOpen = () => {
+      closeMulti();
+      startMode('mpSailor');
+      session.sendWorld(sessionWorld());
+      ui.toast('Your pilot is up. They cannot tell which boat is you.', 'dim');
+    };
+  } catch(e){ multiError(e.message || String(e)); }
+}
+
+async function joinGame(){
+  try {
+    multiError(''); multiStatus('reading invite…');
+    const code = mel('multi-offer-in').value;
+    if(!code || !code.trim()){ multiError('Paste the sailor\'s invite code first.'); return; }
+    makeNet();
+    const answer = await net.join(code);
+    mel('multi-answer-out').value = answer;
+    multiStatus('Send that reply back to your sailor and wait.');
+    beginSession('pilot');
+    net.onOpen = () => multiStatus('linked — waiting for the sea…');
+  } catch(e){ multiError(e.message || String(e)); }
+}
+
+async function acceptAnswer(){
+  try {
+    multiError('');
+    const code = mel('multi-answer').value;
+    if(!code || !code.trim()){ multiError('Paste your pilot\'s reply code first.'); return; }
+    await net.acceptAnswer(code);
+  } catch(e){ multiError(e.message || String(e)); }
+}
+
+function leaveSession(){
+  if(session) session.leave();
+  if(net){ net.close(); net = null; }
+  session = null;
+  disposePilot();
+  disposeRemoteJet();
+}
+
+function disposePilot(){
+  if(pilotSeat){ pilotSeat.dispose(); pilotSeat = null; }
+}
+
+/* The sailor's view of the aircraft: a puppet driven by the interpolated
+   state off the wire. It is the same model the scripted flyover uses, so
+   there is nothing about it that says "this one is a person". */
+function syncRemoteJet(dt){
+  const v = session ? session.remoteJet : null;
+  if(!v){ if(remoteJet) remoteJet.group.visible = false; return; }
+  if(!remoteJet){
+    const built = buildF18();
+    scene.add(built.group);
+    remoteJet = built;
+  }
+  remoteJet.group.visible = true;
+  remoteJet.group.position.set(v.x, v.y, v.z);
+  remoteJet.group.quaternion.set(v.qx, v.qy, v.qz, v.qw);
+  remoteJet.setBurner?.(v.burner || 0);
+}
+function disposeRemoteJet(){
+  if(remoteJet){ try { scene.remove(remoteJet.group); } catch {} remoteJet = null; }
+}
+
+mel('btn-multi')?.addEventListener('click', openMulti);
+mel('btn-multi-close')?.addEventListener('click', closeMulti);
+mel('btn-be-sailor')?.addEventListener('click', hostGame);
+mel('btn-be-pilot')?.addEventListener('click', () => { multiError(''); multiStep('multi-join'); });
+mel('btn-make-answer')?.addEventListener('click', joinGame);
+mel('btn-accept-answer')?.addEventListener('click', acceptAnswer);
+mel('btn-copy-offer')?.addEventListener('click', () => {
+  navigator.clipboard?.writeText(mel('multi-offer').value); multiStatus('Invite copied.');
+});
+mel('btn-copy-answer')?.addEventListener('click', () => {
+  navigator.clipboard?.writeText(mel('multi-answer-out').value); multiStatus('Reply copied.');
+});
+
 function startCreative(){
   audio.start(); audio.resume();
   hour = 12; storm = 0.15; windSpeed = 6;
@@ -656,6 +910,7 @@ function resume(){
 }
 function toMenu(){
   if(creative && creative.active) creative.exit();
+  leaveSession();
   state = 'menu';
   if(strikes) strikes.arm(false);
   document.exitPointerLock();
@@ -821,6 +1076,14 @@ function frame(){
     const tgt = fleet.boats.length ? fleet.boats[0].pos : tmp2.set(0,0,0);
     camera.position.set(tgt.x + Math.cos(a)*r, 9 + Math.sin(menuT*0.21)*3.2 + field.height(tgt.x, tgt.z), tgt.z + Math.sin(a)*r);
     camera.lookAt(tgt.x, tgt.y + 2.5, tgt.z);
+  } else if(mode.pilot && pilotSeat){
+    // The pilot's camera is the aircraft's, so the walking body and its
+    // camera are bypassed entirely.
+    if(playing){
+      pilotSeat.applyInput(input, dt, pilotKeys);
+      pilotSeat.update(dt, { world, contacts: session ? session.remoteBoats : [] });
+      if(pilotSeat.dead && state === 'play') gameOver('Down', pilotSeat.cause);
+    }
   } else if(player){
     if(playing){
       steer(dt);
@@ -855,6 +1118,9 @@ function frame(){
   }
   updateCardio(simDt);
   updateVision(simDt);
+  updateCanopy();
+  updatePilotHud();
+  updateNetStatus();
   updateWake(simDt);
   ocean.update(camera, post.h || innerHeight);
 
@@ -926,6 +1192,16 @@ function frame(){
     // Coughing and burns cost you the ability to work the boat.
     if(player) player.effort = THREE.MathUtils.clamp(
       strikes.effects.exertionCap*(1 - strikes.effects.burn*0.45), 0.3, 1);
+  }
+
+  /* ── the other player ───────────────────────────────────── */
+  if(session && playing){
+    session.update(simDt, {
+      playerShip, fleet: fleet.boats,
+      aircraft: pilotSeat ? pilotSeat.ac : null,
+      burner: pilotSeat ? pilotSeat.controls.burner : 0,
+    });
+    if(mode.multiplayer === 'sailor') syncRemoteJet(simDt);
   }
 
   /* ── the thing that keeps pace ──────────────────────────── */

@@ -83,9 +83,77 @@
   </div>
 </div>
 
+<!-- ── two players (peer to peer, copy-paste signalling) ──── -->
+<div id="multi" class="screen hidden">
+  <div class="panel multi-panel">
+
+    <section id="multi-choose">
+      <h2>Two players</h2>
+      <p class="multi-lede">Two people, one stretch of sea. Choose which end of it you are on.</p>
+
+      <div class="role-cards">
+        <button class="card role" id="btn-be-sailor">
+          <div class="card-top"><span class="dot d-med"></span><h3>Sail</h3><em>Sailor</em></div>
+          <p>You are on the water. Somewhere above you, a person you cannot see is looking for you among the other boats.</p>
+        </button>
+
+        <button class="card role" id="btn-be-pilot">
+          <div class="card-top"><span class="dot d-plus"></span><h3>Fly</h3><em>Pilot</em></div>
+          <p>One aircraft, one tank of fuel, one pass at a time. Nothing on your screen will tell you which boat is the human.</p>
+        </button>
+      </div>
+
+      <div class="multi-row multi-row-left">
+        <button class="btn ghost" id="btn-multi-close">Back</button>
+      </div>
+    </section>
+
+    <section id="multi-host" class="hidden">
+      <h2>Sail</h2>
+
+      <label class="field" for="multi-offer">
+        <span class="field-label">Your invite</span>
+        <textarea id="multi-offer" class="code" readonly rows="4" spellcheck="false" wrap="soft"></textarea>
+      </label>
+      <div class="multi-row"><button class="btn" id="btn-copy-offer">Copy invite</button></div>
+
+      <label class="field" for="multi-answer">
+        <span class="field-label">Their reply</span>
+        <textarea id="multi-answer" class="code" rows="4" spellcheck="false" wrap="soft" placeholder="paste the reply code here"></textarea>
+      </label>
+      <div class="multi-row"><button class="btn" id="btn-accept-answer">Connect</button></div>
+
+      <p class="hint">Send the invite to your pilot however you like. They will send a reply code back to you. Paste that reply into the second box and connect.</p>
+    </section>
+
+    <section id="multi-join" class="hidden">
+      <h2>Fly</h2>
+
+      <label class="field" for="multi-offer-in">
+        <span class="field-label">Their invite</span>
+        <textarea id="multi-offer-in" class="code" rows="4" spellcheck="false" wrap="soft" placeholder="paste the invite code here"></textarea>
+      </label>
+      <div class="multi-row"><button class="btn" id="btn-make-answer">Generate reply</button></div>
+
+      <label class="field" for="multi-answer-out">
+        <span class="field-label">Your reply</span>
+        <textarea id="multi-answer-out" class="code" readonly rows="4" spellcheck="false" wrap="soft"></textarea>
+      </label>
+      <div class="multi-row"><button class="btn" id="btn-copy-answer">Copy reply</button></div>
+
+      <p class="hint">Send the reply back to the sailor. Nothing moves until they have it.</p>
+    </section>
+
+    <div id="multi-status"></div>
+    <div id="multi-error" class="hidden"></div>
+
+  </div>
+</div>
+
 <!-- ── in-game hud ────────────────────────────────────────── -->
 <div id="hud" class="hidden">
   <div id="compass"><div class="strip" id="cstrip"></div><div class="cneedle"></div></div>
+  <div id="net-status" class="hidden"></div>
 
   <div id="stats" class="hidden">
     <div class="bar" data-k="health"><span class="ico">✚</span><i style="--c:#e4574c"></i><b></b></div>
@@ -102,6 +170,21 @@
   <div id="toasts"></div>
   <div id="crosshair"></div>
   <div id="marker" class="hidden"><span></span></div>
+
+  <div id="pilot-hud" class="hidden">
+    <div class="pi-grid">
+      <div class="pi-cell"><span class="pi-l">ALT</span><span class="pi-v" id="pi-alt">—</span><span class="pi-u">ft</span></div>
+      <div class="pi-cell"><span class="pi-l">IAS</span><span class="pi-v" id="pi-ias">—</span><span class="pi-u">kt</span></div>
+      <div class="pi-cell"><span class="pi-l">HDG</span><span class="pi-v" id="pi-hdg">—</span><span class="pi-u">°</span></div>
+      <div class="pi-cell"><span class="pi-l">VSI</span><span class="pi-v" id="pi-vsi">—</span><span class="pi-u">fpm</span></div>
+      <div class="pi-cell"><span class="pi-l">G</span><span class="pi-v" id="pi-g">—</span><span class="pi-u"></span></div>
+      <div class="pi-cell"><span class="pi-l">AOA</span><span class="pi-v" id="pi-aoa">—</span><span class="pi-u">°</span></div>
+      <div class="pi-cell"><span class="pi-l">STORES</span><span class="pi-v" id="pi-stores">—</span><span class="pi-u"></span></div>
+      <div class="pi-cell"><span class="pi-l">FUEL</span><span class="pi-v" id="pi-fuel">—</span><span class="pi-u">kg</span></div>
+    </div>
+    <div class="bar pi-bar"><i id="pi-fuel-bar" style="--c:#e8b45c"></i></div>
+    <div id="pi-warn" class="hidden"></div>
+  </div>
 </div>
 
 <div id="fx-vignette"></div>

@@ -312,6 +312,10 @@ export class Strikes {
     }
 
     const d = playerPos ? playerPos.distanceTo(point) : 999;
+    // Every impact is reported, hit or miss — in a two-player game this is
+    // what the sailor tells the pilot, and it is deliberately only "near"
+    // or "not near", never a number.
+    this.cb.impact?.(point, d);
     this.audio.explosion(THREE.MathUtils.clamp(1-d/700, 0.05, 1)*power, d/340);
 
     if(ship){
