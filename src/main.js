@@ -10,6 +10,7 @@ import { Survival, Quest, LOGBOOK } from './survival.js';
 import { Post } from './post.js';
 import { Strikes } from './strikes.js';
 import { Chart } from './chart.js';
+import { Cardio } from './physiology.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -355,6 +356,29 @@ function startMode(key){
     : 'You are aboard. Something on deck should explain why.', 'dim');
 }
 
+/* ── the body ───────────────────────────────────────────────── */
+const cardio = new Cardio();
+
+/* Feed the cardiovascular model what the game knows about the player. */
+function updateCardio(dt){
+  if(!player) return;
+  const sw = player.state === 'swim';
+  const surf = sw ? field.height(player.pos.x, player.pos.z) : 0;
+  cardio.update(dt, {
+    exertion: THREE.MathUtils.clamp((player.speed || 0)/(sw ? 2.4 : 5.4), 0, 1)
+              * (input.sprint ? 1 : 0.75),
+    fear: mode.hostile ? 0.45 + (strikes && strikes.flash > 0.1 ? 0.5 : 0) : 0,
+    health: survival ? survival.health : 100,
+    water: survival ? survival.water : 100,
+    food: survival ? survival.food : 100,
+    cold: sw && mode.hostile ? 1 : (sw ? 0.35 : 0),
+    submerged: sw,
+    faceInWater: sw && player.pos.y + 1.5 < surf,
+    breath: player.breath ?? 1,
+    decay: mode.decay || 1,
+  });
+}
+
 /* ── the wake ───────────────────────────────────────────────── */
 /* A rolling record of where the hull has been, handed to the water
    shader as foam. Sampled by distance travelled rather than by time,
@@ -626,6 +650,7 @@ function frame(){
     playerShip.lamp.intensity = 38*on;
     playerShip.lantern.material.emissiveIntensity = 2.6*on;
   }
+  updateCardio(simDt);
   updateWake(simDt);
   ocean.update(camera, post.h || innerHeight);
 
@@ -714,6 +739,9 @@ function frame(){
     audio.update(dt, {
       sea: rough, foam: rough*0.7 + storm*0.5, wind: THREE.MathUtils.clamp(windSpeed/20,0,1)*(0.5+storm),
       rain: storm > 0.4 ? (storm-0.4)*1.6 : 0, under: underwater, near: 1,
+      health: survival ? survival.health/100 : 1,
+      breath: player ? player.breath : 1,
+      bpm: cardio.bpm, heartStress: cardio.danger,
     });
     if(playerShip && Math.abs(playerShip.angVel.x) + Math.abs(playerShip.angVel.z) > 0.22)
       audio.creak(THREE.MathUtils.clamp((Math.abs(playerShip.angVel.x)+Math.abs(playerShip.angVel.z))*2, 0, 1));
@@ -785,5 +813,5 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get player(){return player;}, get ship(){return playerShip;},
   get fleet(){return fleet;}, get world(){return world;},
   get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
-  get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;},
+  get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;}, cardio,
   get hour(){return hour;}, set hour(v){hour = v;} };

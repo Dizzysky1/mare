@@ -30,8 +30,11 @@ export function create(engine){
 
     // ── heartbeat ────────────────────────────
     // stress: 0 when all good, up to ~1 when drowning or critical health/breath
-    const stress = Math.max(1-health, 1-breath, drowning ? 0.9 : 0);
-    const bpm = 60 + stress*90;  // 60 @ peace, ~150 @ crisis
+    const stress = ctx?.heartStress ?? Math.max(1-health, 1-breath, drowning ? 0.9 : 0);
+    // Prefer the real cardiovascular model when the game supplies one — it
+    // knows things this heuristic cannot, such as the diving reflex slowing
+    // the heart during a breath-hold rather than racing it.
+    const bpm = ctx?.bpm ?? (60 + stress*90);
     beatPhase += dt * bpm / 60;
 
     // trigger heartbeat thump once per cycle, only when actually stressed
