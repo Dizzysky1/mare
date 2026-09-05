@@ -72,61 +72,75 @@ function burnSeverity(tdu){
   return clamp((tdu - TDU_PAIN)/(TDU_LD50 - TDU_PAIN), 0, 1);
 }
 
-/* ── the cloud: a drifting puff ────────────────────────────────
+/* ── the cloud: a drifting puff ────────────────────────────
    Mass-conserving Gaussian puff. The released mass is fixed, so as the
-   puff grows its peak concentration falls as 1/σ³ — this is why running
-   through a fresh cloud is far worse than sitting in an old one, and why
-   the visual radius growing is not the same as the danger growing.
+   puff grows its peak concentration falls as 1/(σh²σz) — which is why
+   running through a fresh cloud is far worse than sitting in an old one,
+   and why the cloud getting visually bigger is the cloud getting weaker.
 
-   Horizontal and vertical spread are tracked separately. A dense,
-   surface-hugging release spreads sideways much faster than it spreads
-   up, which is the whole reason height is a defence: σz stays small
-   while σh runs away. */
-const SIGMA_H0 = 6;      // m, at burst
-const SIGMA_Z0 = 3;      // m
-/* Spread rates. Pasquill-Gifford neutral (class D) puts σy at roughly
-   8% of travel distance at short range, so a puff riding a 6 m/s wind
-   widens at something under half a metre per second — an order slower
-   than it looks like it should from the drawn cloud, which is why a
-   cloud stays dangerous long after it has stopped looking dense. σz is
-   smaller again for a release that starts at the surface. */
-const GROW_H   = 0.42;   // m/s
-const GROW_Z   = 0.13;   // m/s
+   The width is deliberately slaved to the SAME growth curve HazardFX
+   draws with, rather than to a free-running Pasquill-Gifford sigma. Left
+   to itself the dispersion physics gives a dangerous core only ten or
+   fifteen metres across inside a sixty-metre painted cloud, and the
+   player would be standing in obvious billowing smoke taking no dose at
+   all. The drawn cloud is the promise; this keeps the simulation to it.
+   Realism is preserved where it decides outcomes — conserved mass, the
+   1/σ³ dilution, a flat surface-hugging shape, and the slow lift — and
+   bent only on the one number that has to agree with the picture.
+
+   Horizontal and vertical spread stay separate. A dense release that
+   starts at the surface spreads sideways far faster than it spreads up,
+   and that anisotropy is the whole reason height is a defence. */
+const SIGMA_Z_RATIO = 0.30;   // σz as a fraction of σh — a flat, spreading pancake
+const SIGMA_Z_MIN   = 2.5;    // m
+const GROW_LATE     = 0.22;   // m/s of continued spread after it has filled out
+/* The canister empties over a few seconds rather than all at once, so the
+   airborne mass ramps in. Without this the puff is at its most
+   concentrated in the instant it opens and the entire encounter is
+   decided before the player can react to a cloud that is not yet drawn. */
+const RELEASE_S     = 6;
+
+/* HazardFX fills the drawn radius over its first 20 s, starting at a
+   quarter of it. σh is set so that ~2σ lands on that drawn edge: what
+   looks like the cloud is what doses you. */
+function puffSigmaH(h){
+  const R = Math.max(4, h.radius || 58);
+  const grown = Math.min(1, h.age/20);
+  const drawn = R*(0.25 + 0.75*grown);
+  return drawn*0.5 + GROW_LATE*Math.max(0, h.age - 20);
+}
 
 /* Concentration is reported in units of "the middle of a puff ten
-   seconds after it opens" — a real time to be caught by one. Everything
-   below is calibrated against that reference rather than any physical
-   measure, because the agent is invented. */
+   seconds after it opens" — a realistic moment to be caught by one.
+   Everything downstream is calibrated against that reference rather than
+   any physical measure, because the agent is invented. */
 const CONC_REF_T = 10;
-const CONC_UNIT = 1/(
-  (SIGMA_H0*SIGMA_H0*SIGMA_Z0) /
-  ((SIGMA_H0 + GROW_H*CONC_REF_T)*(SIGMA_H0 + GROW_H*CONC_REF_T)*(SIGMA_Z0 + GROW_Z*CONC_REF_T))
-);
+function puffPeak(h){
+  const shRef = puffSigmaH({ radius:h.radius, age:CONC_REF_T });
+  const szRef = Math.max(SIGMA_Z_MIN, shRef*SIGMA_Z_RATIO);
+  const sh = puffSigmaH(h);
+  const sz = Math.max(SIGMA_Z_MIN, sh*SIGMA_Z_RATIO);
+  const airborne = Math.min(1, h.age/RELEASE_S);   // mass released so far
+  return airborne*(shRef*shRef*szRef)/(sh*sh*sz);
+}
 
-/* Concentration in arbitrary "units", normalised so that standing in the
-   centre of a fresh puff reads about 1.0. Everything downstream is
-   calibrated in these units; they are not a real quantity. */
 function puffConcentration(h, dx, dy, dz){
-  const t = h.age;
-  const sh = SIGMA_H0 + GROW_H*t;
-  const sz = SIGMA_Z0 + GROW_Z*t;
-  // conserved mass: peak ∝ 1/(σh² σz), referenced to the burst geometry
-  const peak = CONC_UNIT*(SIGMA_H0*SIGMA_H0*SIGMA_Z0)/(sh*sh*sz);
+  const sh = puffSigmaH(h);
+  const sz = Math.max(SIGMA_Z_MIN, sh*SIGMA_Z_RATIO);
   const r2 = dx*dx + dz*dz;
-  // the puff's own centre lifts slowly off the water as it warms and expands
-  const centreY = (h.rise != null ? h.rise : 9)*smooth01(t/45);
+  // the puff's own centre lifts slowly off the water as it warms and thins
+  const centreY = (h.rise != null ? h.rise : 9)*smooth01(h.age/45);
   const dyc = dy - centreY;
-  const g = Math.exp(-r2/(2*sh*sh) - dyc*dyc/(2*sz*sz));
-  return peak*g;
+  return puffPeak(h)*Math.exp(-r2/(2*sh*sh) - dyc*dyc/(2*sz*sz));
 }
 
 /* Haber's rule — dose is concentration integrated over time. Generic
    inhalation toxicology, agent-agnostic. The thresholds below are game
    calibration, not anybody's exposure limits. */
-const DOSE_STING  = 6;    // eyes and throat start to complain
-const DOSE_COUGH  = 22;   // productive coughing, you cannot work the boat
-const DOSE_HARM   = 55;   // injury begins to accumulate
-const DOSE_LD50   = 240;
+const DOSE_STING  = 3;    // eyes and throat start to complain
+const DOSE_COUGH  = 10;   // productive coughing, you cannot work the boat
+const DOSE_HARM   = 22;   // injury begins to accumulate
+const DOSE_LD50   = 75;   // sitting in the middle of one for about a minute
 
 /* Clearance: the body works it off, but slowly, and the tail is long. */
 const DOSE_CLEAR_TAU = 95;   // s
@@ -161,6 +175,7 @@ export class MunitionEffects {
     this._toastT = 0;
     this._dmgCarry = 0;
     this._severity = 0;
+    this._gasSpent = 0;
   }
 
   /* Fire exposure at a point. Separated out so the same code serves the
