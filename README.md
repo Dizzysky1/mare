@@ -211,16 +211,13 @@ without a byte crossing the wire.
 
 ### Connecting
 
-The game is static files, so there is no matchmaking server and there is not
-going to be one. Connection is direct peer-to-peer WebRTC with the signalling
-done by hand:
+Connection is direct peer-to-peer WebRTC brokered by an ephemeral public signaling relay:
 
-1. The sailor picks **Sail** and copies the invite code.
-2. The pilot picks **Fly**, pastes it, and copies the reply code back.
-3. The sailor pastes the reply and the link comes up.
+1. The sailor picks **Sail** and copies the generated **invite link** (e.g. `https://aidiotic.github.io/mare/#join=m_...`).
+2. The pilot clicks or opens the link in their browser.
+3. The match exchanges keys and auto-connects with nothing else to copy or paste.
 
-Codes are deflate-compressed before base64 and come out around 600–700
-characters, which is short enough to paste into a chat window.
+Manual offline codes remain available under *Manual codes (offline fallback)* for isolated local networks.
 
 ### Flying
 

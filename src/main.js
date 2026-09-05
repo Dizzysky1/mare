@@ -24,6 +24,7 @@ import { Creative } from './creative.js';
 import { Vision } from './vision.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
+import { createMatchId, parseJoinParam, publishSignal, SignalWatcher } from './signaling.js';
 
 /* ────────────────────────────────────────────────────────────── */
 
@@ -334,6 +335,7 @@ async function boot(){
   const qualityEl = document.getElementById('opt-quality');
   qualityEl.value = tierName === 'low' ? 'low' : tierName === 'high' ? 'med' : 'high';
   setQualityTier(tierName);
+  checkUrlInvite();
 }
 
 let follower = null;
@@ -777,7 +779,20 @@ function openMulti(){
   multiError(''); multiStatus(''); multiStep('multi-choose');
   mel('multi')?.classList.remove('hidden');
 }
-function closeMulti(){ mel('multi')?.classList.add('hidden'); }
+function closeMulti(){
+  cancelSignaling();
+  mel('multi')?.classList.add('hidden');
+}
+
+let activeSignalWatcher = null;
+let currentMatchId = null;
+
+function cancelSignaling(){
+  if(activeSignalWatcher){
+    activeSignalWatcher.close();
+    activeSignalWatcher = null;
+  }
+}
 
 function makeNet(){
   leaveSession();
@@ -831,33 +846,113 @@ function beginSession(role){
 
 async function hostGame(){
   try {
-    multiError(''); multiStep('multi-host'); multiStatus('preparing invite…');
+    cancelSignaling();
+    multiError(''); multiStep('multi-host'); multiStatus('preparing invite link…');
+
+    currentMatchId = createMatchId();
+    const inviteUrl = `${window.location.origin}${window.location.pathname}#join=${currentMatchId}`;
+    if(mel('multi-invite-link')) mel('multi-invite-link').value = inviteUrl;
+
     makeNet();
     const code = await net.host();
-    mel('multi-offer').value = code;
-    multiStatus('Send that to your pilot, then paste their reply below.');
+    if(mel('multi-offer')) mel('multi-offer').value = code;
+
+    // Publish offer to ephemeral topic
+    const offerTopic = `mare_v2_${currentMatchId}_o`;
+    const answerTopic = `mare_v2_${currentMatchId}_a`;
+    await publishSignal(offerTopic, code);
+
+    // Try auto-copying to clipboard
+    try {
+      if(navigator.clipboard?.writeText){
+        await navigator.clipboard.writeText(inviteUrl);
+        multiStatus('Invite link copied to clipboard! Send it to your pilot and wait.');
+      } else {
+        multiStatus('Copy the invite link above, send it to your pilot, and wait.');
+      }
+    } catch {
+      multiStatus('Copy the invite link above, send it to your pilot, and wait.');
+    }
+
     beginSession('sailor');
     net.onOpen = () => {
+      cancelSignaling();
       closeMulti();
       startMode('mpSailor');
       session.sendWorld(sessionWorld());
       ui.toast('Your pilot is up. They cannot tell which boat is you.', 'dim');
     };
+
+    // Listen for answer from pilot
+    activeSignalWatcher = new SignalWatcher(answerTopic, async (answerCode) => {
+      try {
+        multiStatus('Pilot clicked link! Connecting…');
+        await net.acceptAnswer(answerCode);
+      } catch(err) {
+        multiError(err.message || String(err));
+      }
+    });
   } catch(e){ multiError(e.message || String(e)); }
 }
 
-async function joinGame(){
+async function joinFromCodeOrLink(input){
+  const target = parseJoinParam(input);
+  if(!target){
+    multiError('Please enter a valid invite link or code.');
+    return;
+  }
+  cancelSignaling();
+
+  // If it is a match ID (e.g. starts with m_)
+  if(target.startsWith('m_')){
+    try {
+      multiError('');
+      multiStatus('Connecting to sailor…');
+      makeNet();
+
+      const offerTopic = `mare_v2_${target}_o`;
+      const answerTopic = `mare_v2_${target}_a`;
+
+      activeSignalWatcher = new SignalWatcher(offerTopic, async (offerCode) => {
+        try {
+          multiStatus('Received invite! Generating flight reply…');
+          const answer = await net.join(offerCode);
+          if(mel('multi-answer-out')) mel('multi-answer-out').value = answer;
+          multiStatus('Sending reply to sailor…');
+          await publishSignal(answerTopic, answer);
+          multiStatus('Connecting to sailor…');
+          beginSession('pilot');
+          net.onOpen = () => {
+            cancelSignaling();
+            multiStatus('linked — waiting for the sea…');
+          };
+        } catch(err) {
+          multiError(err.message || String(err));
+        }
+      });
+      activeSignalWatcher.onTimeout = () => {
+        multiError('Could not find sailor match. The link may have expired or is still preparing.');
+      };
+    } catch(e){ multiError(e.message || String(e)); }
+    return;
+  }
+
+  // Otherwise, it's a direct manual code (starting with z or u)
   try {
     multiError(''); multiStatus('reading invite…');
-    const code = mel('multi-offer-in').value;
-    if(!code || !code.trim()){ multiError('Paste the sailor\'s invite code first.'); return; }
     makeNet();
-    const answer = await net.join(code);
-    mel('multi-answer-out').value = answer;
+    const answer = await net.join(target);
+    if(mel('multi-answer-out')) mel('multi-answer-out').value = answer;
     multiStatus('Send that reply back to your sailor and wait.');
     beginSession('pilot');
     net.onOpen = () => multiStatus('linked — waiting for the sea…');
   } catch(e){ multiError(e.message || String(e)); }
+}
+
+async function joinGame(){
+  const val = mel('multi-offer-in')?.value;
+  if(!val || !val.trim()){ multiError('Paste the invite link or code first.'); return; }
+  await joinFromCodeOrLink(val);
 }
 
 async function acceptAnswer(){
@@ -870,11 +965,33 @@ async function acceptAnswer(){
 }
 
 function leaveSession(){
+  cancelSignaling();
   if(session) session.leave();
   if(net){ net.close(); net = null; }
   session = null;
+  currentMatchId = null;
   disposePilot();
   disposeRemoteJet();
+  if(window.location.hash.startsWith('#join=')){
+    try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch {}
+  }
+}
+
+function checkUrlInvite(){
+  const hash = window.location.hash;
+  const search = window.location.search;
+  let raw = '';
+  if(hash && hash.includes('join=')) raw = hash;
+  else if(search && search.includes('join=')) raw = search;
+  if(!raw) return;
+
+  const param = parseJoinParam(raw);
+  if(param){
+    openMulti();
+    multiStep('multi-join');
+    if(mel('multi-offer-in')) mel('multi-offer-in').value = window.location.href;
+    joinFromCodeOrLink(param);
+  }
 }
 
 function disposePilot(){
@@ -907,14 +1024,28 @@ for(const id of ['btn-host-back','btn-join-back'])
   mel(id)?.addEventListener('click', () => { leaveSession(); multiError(''); multiStatus(''); multiStep('multi-choose'); });
 mel('btn-be-sailor')?.addEventListener('click', hostGame);
 mel('btn-be-pilot')?.addEventListener('click', () => { multiError(''); multiStep('multi-join'); });
+mel('btn-join-link')?.addEventListener('click', joinGame);
 mel('btn-make-answer')?.addEventListener('click', joinGame);
 mel('btn-accept-answer')?.addEventListener('click', acceptAnswer);
+mel('btn-copy-invite-link')?.addEventListener('click', async () => {
+  const url = mel('multi-invite-link')?.value;
+  if(!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    multiStatus('Invite link copied.');
+  } catch {
+    mel('multi-invite-link')?.select();
+    multiStatus('Link selected — copy with Ctrl+C / Cmd+C.');
+  }
+});
+mel('multi-invite-link')?.addEventListener('click', () => mel('multi-invite-link')?.select());
 mel('btn-copy-offer')?.addEventListener('click', () => {
-  navigator.clipboard?.writeText(mel('multi-offer').value); multiStatus('Invite copied.');
+  navigator.clipboard?.writeText(mel('multi-offer').value); multiStatus('Invite code copied.');
 });
 mel('btn-copy-answer')?.addEventListener('click', () => {
-  navigator.clipboard?.writeText(mel('multi-answer-out').value); multiStatus('Reply copied.');
+  navigator.clipboard?.writeText(mel('multi-answer-out').value); multiStatus('Reply code copied.');
 });
+window.addEventListener('hashchange', checkUrlInvite);
 
 function startCreative(){
   audio.start(); audio.resume();

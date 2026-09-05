@@ -111,39 +111,56 @@
     <section id="multi-host" class="hidden">
       <h2>Sail</h2>
 
-      <label class="field" for="multi-offer">
-        <span class="field-label">Your invite</span>
-        <textarea id="multi-offer" class="code" readonly rows="4" spellcheck="false" wrap="soft"></textarea>
+      <label class="field" for="multi-invite-link">
+        <span class="field-label">Invite Link</span>
+        <input type="text" id="multi-invite-link" class="code-input" readonly spellcheck="false" placeholder="Generating invite link…">
       </label>
-      <div class="multi-row"><button class="btn" id="btn-copy-offer">Copy invite</button></div>
+      <div class="multi-row">
+        <button class="btn" id="btn-copy-invite-link">Copy invite link</button>
+        <button class="btn ghost" id="btn-host-back">Back</button>
+      </div>
 
-      <label class="field" for="multi-answer">
-        <span class="field-label">Their reply</span>
-        <textarea id="multi-answer" class="code" rows="4" spellcheck="false" wrap="soft" placeholder="paste the reply code here"></textarea>
-      </label>
-      <div class="multi-row"><button class="btn" id="btn-accept-answer">Connect</button>
-        <button class="btn ghost" id="btn-host-back">Back</button></div>
+      <p class="hint">Send this link to your pilot. When they click it, the match will connect automatically.</p>
 
-      <p class="hint">Send the invite to your pilot however you like. They will send a reply code back to you. Paste that reply into the second box and connect.</p>
+      <details id="multi-manual-host" class="manual-details">
+        <summary>Manual codes (offline fallback)</summary>
+        <label class="field" for="multi-offer">
+          <span class="field-label">Your invite code</span>
+          <textarea id="multi-offer" class="code" readonly rows="2" spellcheck="false" wrap="soft"></textarea>
+        </label>
+        <div class="multi-row"><button class="btn" id="btn-copy-offer">Copy code</button></div>
+
+        <label class="field" for="multi-answer">
+          <span class="field-label">Their reply code</span>
+          <textarea id="multi-answer" class="code" rows="2" spellcheck="false" wrap="soft" placeholder="paste reply code here"></textarea>
+        </label>
+        <div class="multi-row"><button class="btn" id="btn-accept-answer">Connect manually</button></div>
+      </details>
     </section>
 
     <section id="multi-join" class="hidden">
       <h2>Fly</h2>
 
       <label class="field" for="multi-offer-in">
-        <span class="field-label">Their invite</span>
-        <textarea id="multi-offer-in" class="code" rows="4" spellcheck="false" wrap="soft" placeholder="paste the invite code here"></textarea>
+        <span class="field-label">Invite link or code</span>
+        <input type="text" id="multi-offer-in" class="code-input" spellcheck="false" placeholder="paste invite link or code here">
       </label>
-      <div class="multi-row"><button class="btn" id="btn-make-answer">Generate reply</button></div>
+      <div class="multi-row">
+        <button class="btn" id="btn-join-link">Connect</button>
+        <button class="btn ghost" id="btn-join-back">Back</button>
+      </div>
 
-      <label class="field" for="multi-answer-out">
-        <span class="field-label">Your reply</span>
-        <textarea id="multi-answer-out" class="code" readonly rows="4" spellcheck="false" wrap="soft"></textarea>
-      </label>
-      <div class="multi-row"><button class="btn" id="btn-copy-answer">Copy reply</button>
-        <button class="btn ghost" id="btn-join-back">Back</button></div>
+      <p class="hint">Or click the invite link sent by the sailor to connect automatically.</p>
 
-      <p class="hint">Send the reply back to the sailor. Nothing moves until they have it.</p>
+      <details id="multi-manual-join" class="manual-details">
+        <summary>Manual codes (offline fallback)</summary>
+        <div class="multi-row"><button class="btn" id="btn-make-answer">Generate reply code</button></div>
+        <label class="field" for="multi-answer-out">
+          <span class="field-label">Your reply code</span>
+          <textarea id="multi-answer-out" class="code" readonly rows="2" spellcheck="false" wrap="soft"></textarea>
+        </label>
+        <div class="multi-row"><button class="btn" id="btn-copy-answer">Copy reply code</button></div>
+      </details>
     </section>
 
     <div id="multi-status"></div>

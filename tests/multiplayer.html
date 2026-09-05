@@ -21,5 +21,6 @@ button.onclick=async()=>{
     report.textContent='PASS\n'+JSON.stringify(results,null,2);
   }catch(e){report.textContent='FAIL\n'+e.stack;}finally{button.disabled=false;}
 };
+if(new URLSearchParams(location.search).has('autorun')) button.onclick();
 </script>
 </html>

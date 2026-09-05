@@ -37,7 +37,7 @@ function applyUiPolish(){
     roles.setAttribute('aria-label', 'Two player role');
   }
 
-  document.querySelectorAll('textarea.code').forEach(el => {
+  document.querySelectorAll('textarea.code, input.code-input').forEach(el => {
     el.setAttribute('autocomplete', 'off');
     el.setAttribute('autocapitalize', 'off');
     el.setAttribute('autocorrect', 'off');

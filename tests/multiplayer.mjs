@@ -6,6 +6,7 @@ import { WaveField } from '../src/waves.js';
 import { Minigun } from '../src/fx/minigun.js';
 import { NuclearFX } from '../src/fx/nuclear.js';
 import { Ocean, TIERS } from '../src/ocean.js';
+import { createMatchId, parseJoinParam } from '../src/signaling.js';
 
 export function multiplayerChecks(){
   const check=(v,msg)=>{if(!v)throw new Error(msg);};
@@ -96,5 +97,12 @@ export async function inviteChecks(){
     try{await new Net().join(input);}catch(e){if(/too large|too much data/.test(e.message))rejected++;else throw e;}
   }
   if(rejected!==2)throw new Error('Oversized invite was accepted');
-  return {oversized: 'rejected', compressedExpansion:'rejected'};
+
+  const matchId = createMatchId();
+  if(!matchId.startsWith('m_') || matchId.length < 6) throw new Error('Invalid match ID generated');
+  if(parseJoinParam(`https://aidiotic.github.io/mare/#join=${matchId}`) !== matchId) throw new Error('Failed to parse URL hash invite');
+  if(parseJoinParam(`http://localhost:4488/?join=${matchId}&ref=chat`) !== matchId) throw new Error('Failed to parse query param invite');
+  if(parseJoinParam(matchId) !== matchId) throw new Error('Failed to parse raw match ID');
+
+  return {oversized: 'rejected', compressedExpansion:'rejected', matchId, linkParsing:'passed'};
 }
