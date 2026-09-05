@@ -15,6 +15,7 @@ import { Weather } from './weather.js';
 import { Atmosphere } from './atmosphere.js';
 import { reseedWorld, worldSeed, stream } from './rng.js';
 import { generateCharacter, cardioOptionsFor, knows, describe as describeCharacter } from './character.js';
+import { Creative } from './creative.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -98,7 +99,7 @@ const field = new WaveField(maxTier.waves);
 const ocean = new Ocean(scene, field, sky.uniforms, maxTier);
 const post = new Post(renderer, scene, camera, maxTier);
 
-let world = null, fleet = null, gulls = null, playerShip = null, player = null;
+let world = null, fleet = null, gulls = null, playerShip = null, player = null, creative = null;
 let quest = null, survival = null, mode = MODES.easy, strikes = null;
 let state = 'loading';           // loading | menu | play | pause | over
 let hour = 16.6, storm = 0, wind = new THREE.Vector3(1,0,0.4), windSpeed = 6;
@@ -163,6 +164,7 @@ const KEYS = {
   ControlLeft:'crouch', KeyC:'crouch', AltLeft:'slow',
 };
 addEventListener('keydown', e => {
+  if(creative && creative.active && creative.handleKey(e.code, true)) return;
   if(KEYS[e.code]){ input[KEYS[e.code]] = 1; if(e.code === 'Space') e.preventDefault(); }
   if(state === 'play'){
     if(e.code === 'KeyE') interact();
@@ -179,7 +181,10 @@ addEventListener('keydown', e => {
     else if(state === 'pause') resume();
   }
 });
-addEventListener('keyup', e => { if(KEYS[e.code]) input[KEYS[e.code]] = 0; });
+addEventListener('keyup', e => {
+  if(creative && creative.active && creative.handleKey(e.code, false)) return;
+  if(KEYS[e.code]) input[KEYS[e.code]] = 0;
+});
 addEventListener('blur', () => { for(const k in input) input[k] = 0; });
 
 document.addEventListener('pointerlockchange', () => {
@@ -247,6 +252,8 @@ async function boot(){
     },
   });
 
+  creative = new Creative({ scene, camera, field, world, player, ocean, sky, strikes, fleet, gulls, ui, gov });
+
   ui.el.loading.classList.add('hidden');
   ui.el.menu.classList.remove('hidden');
   state = 'menu';
@@ -285,6 +292,7 @@ document.getElementById('opt-audio').addEventListener('change', e => {
 });
 document.getElementById('read-close').addEventListener('click', () => ui.hideReader());
 document.getElementById('chart-close').addEventListener('click', () => closeChart());
+document.getElementById('btn-creative')?.addEventListener('click', startCreative);
 document.getElementById('btn-resume').addEventListener('click', resume);
 document.getElementById('btn-quit').addEventListener('click', toMenu);
 document.getElementById('btn-menu').addEventListener('click', toMenu);
@@ -534,6 +542,32 @@ function closeChart(){
   if(state === 'play') canvas.requestPointerLock();
 }
 
+/* A sandbox: free flight, spawn anything, drive the sky by hand. */
+function startCreative(){
+  audio.start(); audio.resume();
+  hour = 12; storm = 0.15; windSpeed = 6;
+  wind.set(1,0,0.4).normalize().multiplyScalar(windSpeed);
+  mode = { key:'creative', name:'Creative', spectator:true, survival:false,
+           dayCycle:false, hostile:false, swell:1.0, chop:1.05, windDeg:22, dayLen:0 };
+  weather = null; atmos = null;          // creative drives the sky itself
+  quest = null; survival = null;
+  if(playerShip){ scene.remove(playerShip.group); scene.remove(playerShip.spray); playerShip = null; }
+  reseedWorld((Date.now() ^ 0x5eed) >>> 0);
+  player.setState('fly');
+  player.pos.set(0, 60, 140);
+  discovered.clear();
+  ui.el.menu.classList.add('hidden');
+  ui.el.over.classList.add('hidden');
+  ui.el.hud.classList.remove('hidden');
+  ui.setStats(null, false);
+  ui.setObjective(null);
+  ui.el.crosshair.style.display = '';
+  state = 'play';
+  gov.q = 10; gov.cooldown = 2.5; applyQuality();
+  creative.enter();
+  canvas.requestPointerLock();
+}
+
 function pause(){
   if(state !== 'play') return;
   state = 'pause';
@@ -550,6 +584,7 @@ function resume(){
   canvas.requestPointerLock();
 }
 function toMenu(){
+  if(creative && creative.active) creative.exit();
   state = 'menu';
   if(strikes) strikes.arm(false);
   document.exitPointerLock();
@@ -687,6 +722,27 @@ function frame(){
 
   // weather drifts, and in the hostile sea it never really lets up
   if(playing && weather) updateWeather(simDt);
+
+  if(creative && creative.active && playing){
+    creative.update(dt, { camera });
+    const w = creative.wants;
+    if(w){
+      if(w.hour != null) hour = w.hour;
+      if(w.storm != null) storm = w.storm;
+      if(w.windSpeed != null || w.windDeg != null){
+        if(w.windSpeed != null) windSpeed = w.windSpeed;
+        const wr = (w.windDeg ?? Math.atan2(wind.z, wind.x)*180/Math.PI)*Math.PI/180;
+        wind.set(Math.cos(wr), 0, Math.sin(wr)).multiplyScalar(windSpeed);
+        sky.uniforms.uWindDir.value.set(Math.cos(wr), Math.sin(wr));
+      }
+      if(w.swell != null && Math.abs(w.swell - lastHs) > 0.05){
+        lastHs = w.swell;
+        field.configure({ swell:w.swell, windDeg:w.windDeg ?? mode.windDeg,
+                          chop:mode.chop || 1.05, count:tier.waves });
+        ocean.syncSpectrum();
+      }
+    }
+  }
   /* ── camera ─────────────────────────────────────────────── */
   if(state === 'menu'){
     menuT += dt;
