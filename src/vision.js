@@ -509,7 +509,7 @@ export class Vision {
    the uniforms below on the composite ShaderMaterial, call
    visionApply() once with the already-composited colour, screen uv,
    aspect and time. Cheap on purpose — a 6-tap variable-radius blur,
-   procedural droplets/fog/scratches (no textures), one 3x3 colour
+   procedural fog/scratches (no textures), one 3x3 colour
    multiply. See the report for exactly where this splices into
    post.js's existing comp shader.
    ──────────────────────────────────────────────────────────────── */
@@ -542,39 +542,6 @@ vec3 visionBlur(sampler2D tex, vec2 uv, float radius, float aspect){
     wsum += 1.0;
   }
   return sum/wsum;
-}
-
-// Droplets as little refracting lenses, not a smear: a jittered cell
-// grid gives each cell a droplet center + radius; inside a droplet the
-// sample point is pulled toward its center (a plano-convex bead bends
-// light toward its own axis) and a small rim catches a highlight.
-vec3 visionDroplets(sampler2D tex, vec2 uv, vec2 texel, float amt, float seed, float aspect, vec3 background){
-  if(amt < 0.01) return background;
-  vec2 p = uv*vec2(aspect, 1.0)*18.0;
-  vec2 cell = floor(p), f = fract(p);
-  vec3 col = background;
-  float best = 1e9; vec2 bestOff = vec2(0.0); float bestR = 0.0;
-  for(int oy = -1; oy <= 1; oy++)
-  for(int ox = -1; ox <= 1; ox++){
-    vec2 c = cell + vec2(float(ox), float(oy));
-    float h = vHash21(c + seed);
-    if(h > amt*0.9 + 0.06) continue;              // sparser than "amt" so it fills in gradually, not as a grid flip
-    vec2 center = vec2(float(ox), float(oy)) + vec2(vHash21(c*1.7+1.0), vHash21(c*2.3+2.0));
-    float r = mix(0.18, 0.46, vHash21(c*3.1+3.0)) * clamp(amt*1.6, 0.3, 1.0);
-    float d = length(f - center - vec2(0.5));
-    if(d < r && d < best){ best = d; bestOff = f-center-vec2(0.5); bestR = r; }
-  }
-  if(best < 1e8){
-    // a droplet is its own tiny lens: refracts a still-fairly-sharp
-    // local sample from the UNBLURRED source (real beads focus light,
-    // they don't just smear it) with a bright rim where it catches light
-    float edge = best/bestR;
-    vec2 refr = bestOff*(1.0-edge)*0.55;
-    col = texture2D(tex, uv - refr*texel*40.0).rgb;
-    float rim = smoothstep(0.75,0.95,edge)*0.5;
-    col += rim;
-  }
-  return col;
 }
 
 // Fog: a soft low-frequency mask (denser low/center, where breath and
@@ -619,8 +586,8 @@ vec3 visionColour(vec3 col, mat3 m){ return m * col; }
 vec3 visionApply(sampler2D tex, vec2 uv, vec2 texel, float aspect,
                   float blurR, float droplets, float fog, float salt, float scratches,
                   float dazzle, float lensSeed, mat3 colourMatrix){
-  vec3 blurred = visionBlur(tex, uv, blurR, aspect);
-  vec3 col = visionDroplets(tex, uv, texel, droplets, lensSeed, aspect, blurred);
+  // Screen-space droplet circles are intentionally omitted in every view.
+  vec3 col = visionBlur(tex, uv, blurR, aspect);
   col = visionFog(col, uv, fog);
   col = visionSalt(col, salt);
   col = visionScratches(col, uv, scratches, lensSeed);
