@@ -89,6 +89,19 @@ const CL_P = -0.4;       // roll-rate damping
 const CL_DA = -0.07;     // aileron: +roll input -> right wing down
 const CN_BETA = 0.10;    // weathervane: restoring yaw from sideslip
 const CN_R = -0.18;      // yaw-rate damping
+
+/* Spiral stability. The bank -> turn -> sideslip -> dihedral loop that
+   levels a real aeroplane never closes here, because the yaw damping
+   drives beta to almost zero before the dihedral term can act on it.
+   What is left is a residual roll moment with nothing opposing bank
+   angle itself, so bank integrates without limit: measured, the jet
+   rolled to 62 degrees and flew into the sea in 120 s with the stick
+   centred in a 12 m/s wind. This term stands in for that missing loop.
+   Real fighters are usually mildly spirally UNSTABLE, but a pilot who
+   has to spend minutes searching the sea needs to be able to look away
+   from the instruments, so this is deliberately biased to gentle
+   stability rather than realism. */
+const CL_PHI = -0.032;
 const CN_DR = 0.035;     // rudder: +yaw input -> nose right
 // Stalled-and-rolling is how a departure turns into an autorotating spin:
 // pitch stability fades near the stall break (the real CP-shift/LERX-burst
@@ -338,7 +351,10 @@ export class Aircraft {
 
     const cmAlphaEff = CM_ALPHA * (1 - STALL_CM_FADE * stallProgress);
     const Cpitch = CM0 + cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
-    const Croll = CL_BETA * beta + CL_P * phat + CL_DA * rollCtrl;
+    // sin(bank) from the body right-axis' vertical component
+    this._right.set(1,0,0).applyQuaternion(this.quat);
+    const sinBank = clamp(this._right.y, -1, 1);
+    const Croll = CL_BETA * beta + CL_P * phat + CL_DA * rollCtrl + CL_PHI * sinBank;
     const Cyaw = CN_BETA * beta + CN_R * rhat + CN_DR * yawCtrl + STALL_YAW_COUPLE * stallProgress * phat;
 
     this._torqueBody.set(q * S * this.chord * Cpitch, q * S * this.span * Cyaw, q * S * this.span * Croll);
