@@ -1,7 +1,52 @@
 const $ = (id) => document.getElementById(id);
 
+function applyUiPolish(){
+  if(!document.querySelector('link[data-ui-polish]')){
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = new URL('../ui-polish.css', import.meta.url).href;
+    link.dataset.uiPolish = '';
+    document.head.appendChild(link);
+  }
+
+  const live = (id, role, politeness = 'polite') => {
+    const el = $(id); if(!el) return;
+    el.setAttribute('role', role);
+    el.setAttribute('aria-live', politeness);
+    el.setAttribute('aria-atomic', 'true');
+  };
+  live('loadmsg', 'status');
+  live('multi-status', 'status');
+  live('multi-error', 'alert', 'assertive');
+
+  const toasts = $('toasts');
+  if(toasts){
+    toasts.setAttribute('aria-live', 'polite');
+    toasts.setAttribute('aria-relevant', 'additions text');
+  }
+
+  const cards = $('cards');
+  if(cards){
+    cards.setAttribute('role', 'group');
+    cards.setAttribute('aria-label', 'Game mode');
+  }
+
+  const roles = document.querySelector('.role-cards');
+  if(roles){
+    roles.setAttribute('role', 'group');
+    roles.setAttribute('aria-label', 'Two player role');
+  }
+
+  document.querySelectorAll('textarea.code').forEach(el => {
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocapitalize', 'off');
+    el.setAttribute('autocorrect', 'off');
+  });
+}
+
 export class UI {
   constructor(){
+    applyUiPolish();
     this.el = {
       loading:$('loading'), loadmsg:$('loadmsg'), menu:$('menu'), hud:$('hud'),
       stats:$('stats'), obj:$('objective'), objText:$('obj-text'), objDist:$('obj-dist'),

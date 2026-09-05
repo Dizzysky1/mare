@@ -1,0 +1,116 @@
+/* Small interaction/accessibility layer kept separate from the simulation styles. */
+
+:where(button, select, input, textarea):focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
+
+.card:focus-visible {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(232,180,92,.25), 0 10px 30px rgba(0,0,0,.22);
+  transform: translateY(-2px);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.menu-inner,
+.multi-panel {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (hover: none) {
+  .card:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .screen {
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+
+  .menu-inner {
+    width: 100%;
+    max-height: 100dvh;
+    gap: 18px;
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .card p {
+    min-height: 0;
+  }
+
+  .opts {
+    width: 100%;
+    gap: 12px;
+  }
+
+  .opts label,
+  .opts .btn,
+  #multi .multi-row .btn {
+    min-height: 44px;
+  }
+
+  .opts .btn {
+    flex: 1 1 140px;
+  }
+
+  .opts label {
+    padding-block: 4px;
+  }
+
+  select,
+  input[type="range"] {
+    min-height: 36px;
+  }
+
+  .keys {
+    line-height: 1.7;
+  }
+
+  .multi-panel {
+    width: 100%;
+    max-height: calc(100dvh - 20px);
+    padding: 24px 18px max(20px, env(safe-area-inset-bottom));
+  }
+
+  #multi .multi-row {
+    flex-wrap: wrap;
+  }
+
+  #multi .multi-row .btn {
+    flex: 1 1 140px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loadbar i,
+  .d-ins,
+  .d-plus,
+  .bar.low i:after,
+  .toast,
+  .toast.out {
+    animation: none !important;
+  }
+
+  .card,
+  .card:before,
+  .btn,
+  .bar i:after {
+    transition: none !important;
+  }
+
+  .card:hover,
+  .card:focus-visible {
+    transform: none;
+  }
+}
