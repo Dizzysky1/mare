@@ -177,3 +177,62 @@ flight. That is deliberate: the mechanic is the point, and naming a real
 government as the party bombing you is not.
 
 Built with [Claude Code](https://claude.com/claude-code).
+
+## Two players
+
+An asymmetric mode for two people: one on the water, one in the air.
+
+The rule the whole thing is built around is that **the simulation knows
+everything and the players only know what they can observe**. There is no shared
+HUD, no marker over the other player, and no health bar. What crosses the wire
+is physical state, and each side works out what it means with their own eyes.
+
+**SAILOR** sails the boat in a hostile sea, knowing only that something is
+looking for them.
+
+**PILOT** flies the aircraft with one tank of fuel and a handful of stores.
+There is no target marker, no CCIP, no release cue and no kill confirmation —
+an altimeter, an airspeed indicator, a compass, fuel, stores and a window.
+
+The sailor's client sends **every boat, unlabelled**, in an order shuffled once
+from the world seed. The pilot's client is not told which contact is the human
+and cannot be, because the information is not in the packet. Working out which
+wake belongs to a person is the pilot's entire job, and the only way to do it is
+to watch what a boat does when it thinks it has been seen.
+
+Authority splits along who can see what. The sailor owns the sea, every hull and
+all damage. The pilot owns the aircraft. A release is an event carrying the
+store's exact position and velocity off the pylon; both ends integrate it
+through the same drag model, so both watch it fall in the same place, but only
+the sailor's answer counts. The pilot's only feedback is *near* or *nothing* —
+the sailor's word for it, never a number.
+
+Weather needs no synchronisation at all: it is a pure function of seed and
+elapsed time, so both clients drift through the same front at the same moment
+without a byte crossing the wire.
+
+### Connecting
+
+The game is static files, so there is no matchmaking server and there is not
+going to be one. Connection is direct peer-to-peer WebRTC with the signalling
+done by hand:
+
+1. The sailor picks **Sail** and copies the invite code.
+2. The pilot picks **Fly**, pastes it, and copies the reply code back.
+3. The sailor pastes the reply and the link comes up.
+
+Codes are deflate-compressed before base64 and come out around 600–700
+characters, which is short enough to paste into a chat window.
+
+### Flying
+
+`W`/`S` pitch · `A`/`D` roll · `Q`/`R` rudder · `Space`/`Ctrl` throttle ·
+`Shift` afterburner · `X` airbrake · `F` release · `V` view · `B` reset the
+altimeter datum.
+
+That last one matters. The altimeter is barometric and reads what the pressure
+tells it, so flying through a front without resetting the datum will lie to you
+by a hundred metres or more and never mention it. Rain is stripped off the
+canopy by the airflow above about 70 knots, condensation forms when the skin
+sits below the dew point, and cloud base is derived from the temperature/dew
+point spread — inside the layer there is no horizon and only the instruments.

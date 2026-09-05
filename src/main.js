@@ -475,7 +475,12 @@ function startMode(key, mpWorld){
   audio.fade(1, 2.0);
   canvas.requestPointerLock();
 
-  ui.toast(mode.spectator
+  if(mode.pilot){
+    // The controls are not the sailing controls and nothing else says so.
+    ui.toast('W/S pitch · A/D roll · Q/R rudder · Space and Ctrl throttle', 'dim');
+    setTimeout(() => ui.toast('F releases · V view · X airbrake · B resets the altimeter', 'dim'), 5200);
+    setTimeout(() => ui.toast('Nothing will tell you which boat is the person.', 'bad'), 11000);
+  } else ui.toast(mode.spectator
     ? 'Nothing to do. That is the point.'
     : 'You are aboard. Something on deck should explain why.', 'dim');
 }
