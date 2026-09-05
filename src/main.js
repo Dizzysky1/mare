@@ -1309,4 +1309,7 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get runSeed(){return runSeed;}, reseedWorld, worldSeed, get gulls(){return gulls;},
   get character(){return character;}, get cardio(){return cardio;}, knows, describeCharacter,
   get vision(){return vision;}, post,
+  // two-player handles, mostly so a session can be driven from a console
+  startMode, get net(){return net;}, get session(){return session;},
+  get pilot(){return pilotSeat;}, hostGame, joinGame, acceptAnswer, leaveSession,
   get hour(){return hour;}, set hour(v){hour = v;} };
