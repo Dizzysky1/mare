@@ -162,6 +162,23 @@ export class Strikes {
       this.cb.toast?.('Something is coming down. Get out from under it.', 'bad');
   }
 
+  /* A store released by a human pilot on the other end of the wire.
+     Both clients call this with the same release conditions and both
+     integrate it the same way, so both see it fall in the same place —
+     but only the sailor's client is authoritative for what it does when
+     it lands, because the sailor is the one who can see that. */
+  dropStore(kind, pos, vel){
+    const mesh = buildBomb(kind);
+    mesh.position.set(pos.x, pos.y, pos.z);
+    setFins(mesh, 0);
+    this.scene.add(mesh);
+    this.bombs.push({
+      mesh, vel: new THREE.Vector3(vel.x, vel.y, vel.z),
+      impact: null, index: -1, age: 0, kind,
+    });
+    return true;
+  }
+
   update(dt, target, ship, playerPos, wind, env = {}){
     this.blast.update(dt, playerPos);
     this.updateHazards(dt, playerPos, wind);

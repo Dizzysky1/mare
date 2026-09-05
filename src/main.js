@@ -9,6 +9,10 @@ import { Player } from './player.js';
 import { Survival, Quest, LOGBOOK } from './survival.js';
 import { Post } from './post.js';
 import { Strikes } from './strikes.js';
+import { Net } from './net.js';
+import { Session } from './multiplayer.js';
+import { Pilot } from './pilot.js';
+import { buildF18 } from './fx/f18.js';
 import { Chart } from './chart.js';
 import { Cardio } from './physiology.js';
 import { Weather } from './weather.js';
@@ -42,6 +46,25 @@ const MODES = {
     key:'insane', name:'The unwelcoming side', spectator:false, survival:true, hard:true, decay:2.0,
     dayCycle:true, hour:19.6, swell:3.9, windDeg:200, windSpeed:18.0, storm:0.88, chop:1.35,
     boats:1, gulls:12, dayLen:1100, hostile:true, storminess:0.88, stormMin:0.55, stormMax:1,
+  },
+  /* ── two-player modes ──────────────────────────────────────
+     The sailor's world is Insane+ with the scripted air force switched
+     OFF: the aircraft overhead is a person now, so the game must not
+     also be flying one at them. The pilot's world is the same sea,
+     rebuilt from the seed the sailor sends, with no boat and no body. */
+  mpSailor: {
+    key:'mpSailor', name:'Contested waters — sailing', multiplayer:'sailor',
+    spectator:false, survival:true, hard:true, decay:2.0,
+    dayCycle:true, hour:17.4, swell:2.9, windDeg:200, windSpeed:14.0, storm:0.5, chop:1.3,
+    boats:9, gulls:14, dayLen:1400, hostile:true, strikes:false,
+    storminess:0.6, stormMin:0.3, stormMax:0.85,
+  },
+  mpPilot: {
+    key:'mpPilot', name:'Contested waters — flying', multiplayer:'pilot',
+    spectator:false, pilot:true, survival:false, hard:false, decay:1,
+    dayCycle:true, hour:17.4, swell:2.9, windDeg:200, windSpeed:14.0, storm:0.5, chop:1.3,
+    boats:0, gulls:0, dayLen:1400, hostile:true, strikes:false,
+    storminess:0.6, stormMin:0.3, stormMax:0.85,
   },
   insanePlus: {
     key:'insanePlus', name:'Contested waters', spectator:false, survival:true, hard:true, decay:2.3,
