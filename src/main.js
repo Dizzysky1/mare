@@ -16,6 +16,7 @@ import { Atmosphere } from './atmosphere.js';
 import { reseedWorld, worldSeed, stream } from './rng.js';
 import { generateCharacter, cardioOptionsFor, knows, describe as describeCharacter } from './character.js';
 import { Creative } from './creative.js';
+import { Vision } from './vision.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -348,6 +349,7 @@ function startMode(key){
   // they happen to know all come from this one seed.
   character = generateCharacter(runSeed);
   cardio = new Cardio(cardioOptionsFor(character));
+  vision = new Vision(character);
 
   quest = new Quest(mode, world);
   discovered.clear();
@@ -442,7 +444,7 @@ function nearLandFactor(){
 
 /* ── the body ───────────────────────────────────────────────── */
 let cardio = new Cardio();
-let character = null;
+let character = null, vision = null;
 
 /* Feed the cardiovascular model what the game knows about the player. */
 function updateCardio(dt){
@@ -465,6 +467,30 @@ function updateCardio(dt){
     heatStrain: atmos ? atmos.strain.cardio : 0,
     coldExposure: atmos ? atmos.strain.coldExposure : 0,
   });
+}
+
+/* ── the eyes ───────────────────────────────────────────────── */
+/* Everything the character's own eyes and lenses do to the image. The
+   simulation knows the world exactly; this is the part they can see. */
+function updateVision(dt){
+  if(!vision || !player) return;
+  const night = sunInfo.night;
+  vision.update(dt, {
+    weather, atmosphere: atmos,
+    playerState: player.state,
+    wet: player.state === 'swim' ? 1 : (player.wet || 0),
+    lightLevel: THREE.MathUtils.clamp(1 - night*0.95, 0.03, 1),
+    wearingGlasses: vision.hasGlasses,
+  });
+  const u = post.comp.uniforms, v = vision.postUniforms();
+  u.uVisionOn.value = 1;
+  u.uBlur.value = v.uBlur; u.uDroplets.value = v.uDroplets;
+  u.uFog.value = v.uFog;   u.uSalt.value = v.uSalt;
+  u.uScratches.value = v.uScratches; u.uDazzle.value = v.uDazzle;
+  u.uLensSeed.value = v.uLensSeed;
+  u.uExposureMul.value = v.uExposureMul; u.uSatMul.value = v.uSatMul;
+  if(v.uColourMatrix) u.uColourMatrix.value.fromArray(v.uColourMatrix);
+  u.uTexel.value.set(1/Math.max(1, post.w||innerWidth), 1/Math.max(1, post.h||innerHeight));
 }
 
 /* ── the wake ───────────────────────────────────────────────── */
@@ -783,6 +809,7 @@ function frame(){
     playerShip.lantern.material.emissiveIntensity = 2.6*on;
   }
   updateCardio(simDt);
+  updateVision(simDt);
   updateWake(simDt);
   ocean.update(camera, post.h || innerHeight);
 
@@ -951,4 +978,5 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get weather(){return weather;}, get atmos(){return atmos;},
   get runSeed(){return runSeed;}, reseedWorld, worldSeed, get gulls(){return gulls;},
   get character(){return character;}, get cardio(){return cardio;}, knows, describeCharacter,
+  get vision(){return vision;}, post,
   get hour(){return hour;}, set hour(v){hour = v;} };

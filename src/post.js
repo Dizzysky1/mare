@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { VISION_GLSL } from './vision.js';
 
 /* HDR pipeline: MSAA float target → bright pass → separable bloom →
    ray-marched crepuscular rays → graded ACES composite.
@@ -90,13 +91,22 @@ export class Post {
         uBloom:{value:0.55}, uExposure:{value:1.0}, uTime:{value:0},
         uVignette:{value:0.32}, uGrain:{value:0.035}, uChroma:{value:0.0},
         uUnder:{value:0.0}, uUnderCol:{value:new THREE.Color(0.06,0.30,0.36)},
+        // what the character's eyes and lenses are doing to the image
+        uVisionOn:{value:0.0}, uBlur:{value:0.0}, uDroplets:{value:0.0}, uFog:{value:0.0},
+        uSalt:{value:0.0}, uScratches:{value:0.0}, uDazzle:{value:0.0}, uLensSeed:{value:0.0},
+        uExposureMul:{value:1.0}, uSatMul:{value:1.0},
+        uColourMatrix:{value:new THREE.Matrix3()}, uTexel:{value:new THREE.Vector2(1/1920,1/1080)},
         uSat:{value:1.0}, uWarp:{value:0.0}, uTint:{value:new THREE.Color(1,1,1)},
         uFlash:{value:0.0}, uRain:{value:0.0}, uAspect:{value:1.6},
       },
-      vertexShader:VERT, fragmentShader:/* glsl */`
+      vertexShader:VERT, fragmentShader:VISION_GLSL + /* glsl */`
         uniform sampler2D tD, tBloom, tRays;
         uniform float uBloom, uExposure, uTime, uVignette, uGrain, uChroma, uUnder, uSat, uWarp, uFlash, uRain, uAspect;
         uniform vec3 uUnderCol, uTint;
+        uniform float uVisionOn, uBlur, uDroplets, uFog, uSalt, uScratches, uDazzle, uLensSeed;
+        uniform float uExposureMul, uSatMul;
+        uniform mat3 uColourMatrix;
+        uniform vec2 uTexel;
         varying vec2 vUv;
 
         vec3 aces(vec3 x){
@@ -119,7 +129,10 @@ export class Post {
 
           vec3 col;
           float ca = uChroma*0.004 + uUnder*0.002;
-          if(ca > 0.0001){
+          if(uVisionOn > 0.5){
+            col = visionApply(tD, uv, uTexel, uAspect, uBlur, uDroplets, uFog,
+                              uSalt, uScratches, uDazzle, uLensSeed, uColourMatrix);
+          } else if(ca > 0.0001){
             col.r = texture2D(tD, uv + vec2(ca,0.0)).r;
             col.g = texture2D(tD, uv).g;
             col.b = texture2D(tD, uv - vec2(ca,0.0)).b;
@@ -145,12 +158,12 @@ export class Post {
 
           if(uUnder > 0.001) col = mix(col, col*uUnderCol*2.6, uUnder*0.85);
           col += uFlash;
-          col *= uExposure;
+          col *= uExposure*uExposureMul;
           col *= uTint;
           col = aces(col);
 
           float l = dot(col, vec3(0.2126,0.7152,0.0722));
-          col = mix(vec3(l), col, uSat);
+          col = mix(vec3(l), col, uSat*uSatMul);
 
           float d = length(vUv-0.5);
           col *= 1.0 - smoothstep(0.42, 0.95, d)*uVignette;
