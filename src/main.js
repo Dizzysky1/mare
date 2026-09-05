@@ -392,7 +392,10 @@ function updateWeather(dt){
   // the band that mode promised on the menu card.
   storm = THREE.MathUtils.clamp(weather.storm, mode.stormMin ?? 0, mode.stormMax ?? 1);
 
-  windSpeed = weather.windSpeed + weather.gust*0.4;
+  // Same bargain as `storm`: the wind may roam, but a mode has to stay the
+  // mode it advertised — and the hull is only stable across a limited band.
+  windSpeed = THREE.MathUtils.clamp(weather.windSpeed + weather.gust*0.4,
+                                    mode.windSpeed*0.55, mode.windSpeed*1.30);
   wind.set(Math.cos(weather.windDir), 0, Math.sin(weather.windDir)).multiplyScalar(windSpeed);
   sky.uniforms.uWindDir.value.set(Math.cos(weather.windDir), Math.sin(weather.windDir));
 
