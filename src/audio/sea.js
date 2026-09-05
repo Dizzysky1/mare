@@ -6,7 +6,7 @@ export function create(engine) {
   swellFilter.frequency.value = 220;
   swellFilter.Q.value = 0.4;
   const swellGain = engine.ctx.createGain();
-  swellGain.gain.value = 0.05;
+  swellGain.gain.value = 0;   // update() brings this up; silent until then, like every other bed
 
   swellSrc.connect(swellFilter);
   swellFilter.connect(swellGain);

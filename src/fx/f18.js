@@ -185,12 +185,12 @@ function windscreenGeometry(z0, y0, hw0, z1, y1, hw1){
   g.computeVertexNormals();
   return g;
 }
-function spineGeometry(zf, hwf, zr, hwr){
-  const yf = fusTopY(zf), yr = fusTopY(zr);
-  // a shallow ridge — its prominence above the local hull (not its
-  // absolute height) is what tapers to ~0 at the rear, since the hull
-  // itself is already climbing toward the wing-box station back there.
-  const apexF = yf + 0.10, apexR = yr + 0.02;
+function spineGeometry(zf, apexF, zr, hwr){
+  const hwf = 0.17, yf = fusTopY(zf), yr = fusTopY(zr);
+  // apexF comes in pre-computed (it butts against the canopy's own surface);
+  // the rear end just needs a shallow bump above the local hull, since the
+  // hull itself is already climbing toward the wing-box station back there.
+  const apexR = yr + 0.02;
   const A=[0,apexF,zf], BL=[-hwf,yf,zf], BR=[hwf,yf,zf];
   const A2=[0,apexR,zr], BL2=[-hwr,yr,zr], BR2=[hwr,yr,zr];
   const pos = [];
@@ -256,7 +256,27 @@ const DUCT_MOUTH = DUCT_STATIONS[0];
 const SPLITTER_X = 0.745, SPLITTER_Y = -0.08, SPLITTER_Z = 1.98;
 
 /* canopy fairing stations, front to back along +Z */
-const CANOPY_Z0 = 5.05, CANOPY_Z1 = 4.45, CANOPY_Z2 = 3.35, CANOPY_Z3 = 1.2;
+const CANOPY_Z0 = 5.05, CANOPY_Z1 = 4.60, CANOPY_Z2 = 3.20, CANOPY_Z3 = 1.2;
+const CANOPY_CENTER_Z = 3.9;
+const CANOPY_R = 0.55, CANOPY_THETA = Math.PI*0.42, CANOPY_SCALE = { x:0.56, y:0.62, z:1.55 };
+// the bubble's rim is a flat circle in local sphere space, so instead of
+// chasing the hull's changing height along its footprint we sink the rim
+// below the lowest hull point under it — the hull hides the join, cheaply
+// and without gaps, and only the dome above shows through.
+const CANOPY_RIM_LOCAL_Y = CANOPY_R*Math.cos(CANOPY_THETA);
+const CANOPY_MIN_HULL = Math.min(
+  fusTopY(CANOPY_CENTER_Z - CANOPY_R*Math.sin(CANOPY_THETA)*CANOPY_SCALE.z),
+  fusTopY(CANOPY_CENTER_Z),
+  fusTopY(CANOPY_CENTER_Z + CANOPY_R*Math.sin(CANOPY_THETA)*CANOPY_SCALE.z),
+);
+const CANOPY_Y = (CANOPY_MIN_HULL - 0.05) - CANOPY_RIM_LOCAL_Y*CANOPY_SCALE.y;
+// the dome's own side-view profile height at a given world z, so the
+// windscreen and spine butt against the actual bubble surface instead of
+// an independent guess that could poke through it or leave a gap.
+function canopySurfaceY(z){
+  const s = THREE.MathUtils.clamp(Math.abs(z-CANOPY_CENTER_Z)/(CANOPY_R*CANOPY_SCALE.z), 0, 1);
+  return CANOPY_Y + CANOPY_R*Math.cos(Math.asin(s))*CANOPY_SCALE.y;
+}
 
 /* ── shared geometries (built once) ─────────────────────────── */
 const G_FUSELAGE = buildFuselage();
@@ -269,9 +289,8 @@ const G_RUDDER = finGeometry(RUDDER_OUTLINE, RUDDER_THICK);
 const G_DUCT = ductTrunkGeometry(DUCT_STATIONS, DUCT_SEGS);
 const G_DUCT_CAVITY = ductCapGeometry(DUCT_MOUTH, -0.08, DUCT_SEGS);
 const G_SPLITTER = new THREE.BoxGeometry(0.03, DUCT_MOUTH.hh*1.9, 1.15);
-const G_WINDSCREEN = windscreenGeometry(CANOPY_Z0, fusTopY(CANOPY_Z0)+0.02, 0.24, CANOPY_Z1, fusTopY(CANOPY_Z1)+0.16, 0.30);
-const G_SPINE = spineGeometry(CANOPY_Z2, 0.17, CANOPY_Z3, 0.02);
-const CANOPY_R = 0.55, CANOPY_THETA = Math.PI*0.42, CANOPY_SCALE = { x:0.56, y:0.62, z:1.55 };
+const G_WINDSCREEN = windscreenGeometry(CANOPY_Z0, fusTopY(CANOPY_Z0)+0.02, 0.24, CANOPY_Z1, canopySurfaceY(CANOPY_Z1)-0.02, 0.30);
+const G_SPINE = spineGeometry(CANOPY_Z2, canopySurfaceY(CANOPY_Z2)-0.02, CANOPY_Z3, 0.02);
 const G_CANOPY = new THREE.SphereGeometry(CANOPY_R, 14, 10, 0, Math.PI*2, 0, CANOPY_THETA);
 const G_NACELLE = new THREE.CylinderGeometry(0.40, 0.52, NACELLE_Z0-NACELLE_Z1, 12, 1, true);
 G_NACELLE.rotateX(Math.PI/2);
@@ -321,16 +340,8 @@ export function buildF18(opts = {}){
   add(G_FUSELAGE, M_FUSELAGE);
 
   // canopy fairing: windscreen → bubble → spine tapering into the fuselage,
-  // rather than a dark ball dropped on top of a flat deck. The bubble's rim
-  // is a flat circle in local space (a sphere cap), so instead of chasing
-  // the hull's changing height along its footprint we just sink the rim
-  // below the lowest point of the hull under it — cheap and gap-proof,
-  // since the hull solid hides the join and only the dome shows through.
-  const canopyCenterZ = 3.9, canopyHalfLen = CANOPY_R*Math.sin(CANOPY_THETA)*CANOPY_SCALE.z;
-  const canopyMinHull = Math.min(fusTopY(canopyCenterZ-canopyHalfLen), fusTopY(canopyCenterZ), fusTopY(canopyCenterZ+canopyHalfLen));
-  const canopyRimLocalY = CANOPY_R*Math.cos(CANOPY_THETA);
-  const canopyY = (canopyMinHull-0.05) - canopyRimLocalY*CANOPY_SCALE.y;
-  const canopy = add(G_CANOPY, M_CANOPY, 0, canopyY, canopyCenterZ);
+  // rather than a dark ball dropped on top of a flat deck.
+  const canopy = add(G_CANOPY, M_CANOPY, 0, CANOPY_Y, CANOPY_CENTER_Z);
   canopy.scale.set(CANOPY_SCALE.x, CANOPY_SCALE.y, CANOPY_SCALE.z);
   add(G_WINDSCREEN, M_CANOPY);
   add(G_SPINE, M_AIRFRAME);
