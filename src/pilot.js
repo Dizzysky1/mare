@@ -56,14 +56,14 @@ export class Pilot {
       atmosphere: opts.atmosphere, weather: opts.weather, field: opts.field,
       pos: opts.pos || { x: 0, y: 1200, z: -6000 },
       heading: opts.heading ?? 0,
-      // Trimmed cruise for this airframe is about 188 m/s TAS at altitude.
-      // Spawning faster than that means spawning out of trim, which reads
-      // as the aircraft fighting you before you have touched anything.
+      // A comfortable search speed; attitude and controls are solved below.
       speed: opts.speed ?? 188,
       loadout: opts.loadout || 'mixed',
     });
 
     this.controls = { pitch:0, roll:0, yaw:0, throttle:0.72, burner:0, airbrake:0, trim:0 };
+    this.spawnTrimmed = this.ac.trimLevelFlight(this.controls, opts.speed ?? 188);
+    if(!this.spawnTrimmed) this.onToast('Outside level-flight trim range — adjust speed and power', 'bad');
     this.view = 'cockpit';          // 'cockpit' | 'chase'
     this.gearOfInterest = 0;
 
@@ -97,7 +97,7 @@ export class Pilot {
 
   /* ── controls ───────────────────────────────────────────────
      WASD is the stick, not a movement vector: W/S is pitch, A/D is roll.
-     Q/E is the rudder, Shift/Ctrl is the throttle, Space releases. */
+     Q/R is the rudder, Space/Ctrl is the throttle, F releases. */
   applyInput(input, dt, keys){
     const rate = 2.6, centre = 3.4;
     const towards = (cur, want) => {

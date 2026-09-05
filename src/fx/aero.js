@@ -166,10 +166,11 @@ export const AIRCRAFT = {
 };
 
 /** Parasitic + induced drag on the aircraft, in newtons. */
-export function aircraftDrag({ speed, density, bank, loadFactor, storesMass, storesCount }){
+export function aircraftDrag({ speed, density, bank, loadFactor, storesMass, storesCount, mass: totalMass }){
   const v = Math.max(0, safe(speed));
   const rho = density > 0 ? density : AIR.rho0;
-  const mass = AIRCRAFT.emptyMass + Math.max(0, safe(storesMass));
+  // Live aircraft pass wet mass; scripted flyovers retain the dry-mass fallback.
+  const mass = totalMass > 0 ? totalMass : AIRCRAFT.emptyMass + Math.max(0, safe(storesMass));
   // A load factor may be given directly (e.g. from a scripted manoeuvre); a
   // bank angle implies the coordinated-turn value 1/cos(bank). Cap near 90°
   // so a vertical bank can't demand infinite lift.

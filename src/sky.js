@@ -118,6 +118,8 @@ export class Sky {
       uWindDir:{value:new THREE.Vector2(1,0.3)},
     };
 
+    scene.userData.particleEnvironment = this.uniforms;
+
     const mat = new THREE.ShaderMaterial({
       uniforms:this.uniforms, side:THREE.BackSide, depthWrite:false, depthTest:false, fog:false,
       vertexShader:/* glsl */`

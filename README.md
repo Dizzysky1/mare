@@ -228,7 +228,12 @@ characters, which is short enough to paste into a chat window.
 
 `W`/`S` pitch · `A`/`D` roll · `Q`/`R` rudder · `Space`/`Ctrl` throttle ·
 `Shift` afterburner · `X` airbrake · `F` release · `V` view · `B` reset the
-altimeter datum.
+altimeter datum · `[`/`]` nose-down/nose-up trim.
+
+The aircraft starts with attitude, trim and throttle balanced for its current
+airspeed, fuel, stores and air density. This is a one-time spawn adjustment;
+after changing speed or loadout, hold the trim keys to relieve stick pressure
+and adjust throttle to settle the climb or descent.
 
 That last one matters. The altimeter is barometric and reads what the pressure
 tells it, so flying through a front without resetting the datum will lie to you

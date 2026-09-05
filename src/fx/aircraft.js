@@ -84,14 +84,9 @@ const CM_ALPHA = 0.85;   // positive: nose-up alpha -> nose-down moment (restori
 const CM0 = -0.033;
 const CM_Q = -14;        // pitch-rate damping
 const CM_DE = -0.40;     // elevator: +pitch input -> nose up
-/* Trim authority. CM0 alone fixes the trimmed angle of attack, which
-   means hands-off level flight exists at exactly ONE airspeed (~188 m/s
-   TAS at 2000 m for this airframe) and anywhere above it the aircraft
-   bunts upward — measured hands-off at 220 m/s it climbed to 15 km. A
-   real aircraft has a trim wheel for precisely this, so `controls.trim`
-   biases the pitching moment the same way the stabilator's rigged
-   incidence does. Sized at a third of full elevator authority: enough to
-   trim out the whole usable speed range, not enough to fly on. */
+/* Manual stabilator bias. The spawn solver below balances the actual
+   lift, weight and thrust instead of assuming one speed is always trimmed.
+   Fuel burn, store release and weather can subsequently require re-trimming. */
 const CM_TRIM = -0.13;
 // Dihedral effect: restoring roll from sideslip. POSITIVE in these axes, and
 // that sign is the whole ballgame. beta = asin(vBody.x/V) is positive when the
@@ -277,6 +272,57 @@ export class Aircraft {
     this._surfaces = { aileron: 0, elevator: 0, rudder: 0 };
   }
 
+  /* One-time spawn setup, never an in-flight autopilot. Solve the forces
+     used by step(): lift acts along body up, so its rearward component
+     and thrust's upward component both matter at positive incidence.
+     For horizontal air velocity, T cos(a) - L sin(a) = D and
+     L cos(a) + T sin(a) = W, hence L/cos(a) + D tan(a) = W.
+     Bisection stays on the attached-flow branch and refuses impossible
+     trim requests rather than silently clamping into an unstable spawn. */
+  trimLevelFlight(controls, speed = this.trueAirspeed){
+    const density = this.atmosphere?.density ?? AIR.rho0;
+    const soundSpeed = this.atmosphere?.speedOfSound ?? 340;
+    if(!(speed > 0) || !Number.isFinite(speed) || !(density > 0) || this.fuel <= 0) return false;
+    this.mass = this.emptyMass + this.fuel + this.storesMass;
+    const qS = 0.5*density*speed*speed*AIRCRAFT.wingArea;
+    const weight = this.mass*G;
+    const balance = alpha => {
+      const lift = qS*liftCoeff(alpha);
+      const drag = aircraftDrag({ speed, density, mass:this.mass,
+        storesCount:this.storesCount, loadFactor:Math.max(0.05, Math.abs(lift/weight)) }).total;
+      return { lift, drag, vertical:lift/Math.cos(alpha) + drag*Math.tan(alpha) };
+    };
+    let lo = ALPHA0, hi = ALPHA0 + ALPHA_STALL - 1e-6;
+    if(balance(lo).vertical > weight || balance(hi).vertical < weight) return false;
+    for(let i = 0; i < 48; i++){
+      const mid = (lo + hi)*0.5;
+      if(balance(mid).vertical < weight) lo = mid; else hi = mid;
+    }
+    const alpha = (lo + hi)*0.5, force = balance(alpha);
+    const trim = -(CM0 + CM_ALPHA*alpha)/CM_TRIM;
+    const thrust = (force.drag + force.lift*Math.sin(alpha))/Math.cos(alpha);
+    const thrustFactor = Math.pow(clamp(density/AIR.rho0, 0.05, 1.3), THRUST_DENSITY_EXP)
+      * (1 + THRUST_RAM_GAIN*Math.min(1.2, speed/soundSpeed));
+    const throttle = thrust/(AIRCRAFT.thrustMil*thrustFactor);
+    if(Math.abs(trim) > 1 || throttle > 1 || throttle < 0) return false;
+    controls.trim = trim; controls.throttle = throttle;
+    controls.pitch = controls.roll = controls.yaw = controls.burner = controls.airbrake = 0;
+    this.quat.setFromAxisAngle(this._axis.set(0, 1, 0), this.heading);
+    this._dq.setFromAxisAngle(this._axis.set(1, 0, 0), -alpha);
+    this.quat.multiply(this._dq);
+    const w = this.weather, wind = w ? (w.windSpeed || 0) + (w.gust || 0) : 0;
+    this.vel.set(Math.sin(this.heading)*speed + Math.cos(w?.windDir || 0)*wind,
+      0, Math.cos(this.heading)*speed + Math.sin(w?.windDir || 0)*wind);
+    this.angVel.set(0, 0, 0);
+    this.alpha = alpha; this.beta = 0; this.trueAirspeed = speed;
+    this.loadFactor = force.lift/weight;
+    this.groundSpeed = this.vel.length();
+    this._fwd.set(0, 0, 1).applyQuaternion(this.quat);
+    this._sync();
+    this._updateInstruments(0, controls);
+    return true;
+  }
+
   /* Pilot action: dial the altimeter to a known pressure (field elevation
      QNH, typically). Everything else about the reading follows from this
      going stale or not. */
@@ -292,12 +338,14 @@ export class Aircraft {
     const id = this._remaining.shift();
     this.storesMass -= munition(id).mass;
     this.storesCount = this._remaining.length;
+    this.mass = this.emptyMass + this.fuel + this.storesMass;
     this.group.updateMatrixWorld(true);
     const anchor = this.pylons[this._releaseIndex % Math.max(1, this.pylons.length)];
     this._releaseIndex++;
     anchor.getWorldPosition(this._relPos);
     return {
       munitionId: id,
+      windX:this._wind.x,windZ:this._wind.z,simTime:this.field?.time ?? 0,
       pos: { x: this._relPos.x, y: this._relPos.y, z: this._relPos.z },
       vel: { x: this.vel.x, y: this.vel.y, z: this.vel.z },
     };
@@ -378,7 +426,7 @@ export class Aircraft {
     // ever cares about the magnitude of the lift being generated.
     const drag = aircraftDrag({
       speed: trueAirspeed, density, loadFactor: Math.max(0.05, Math.abs(n)),
-      storesMass: this.storesMass, storesCount: this.storesCount,
+      storesMass: this.storesMass, storesCount: this.storesCount, mass: this.mass,
     });
     // additions aero.js doesn't model: a slipping fuselage, a stalled
     // wing's separated-flow drag rise, and the speedbrake

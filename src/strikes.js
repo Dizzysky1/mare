@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ClusterSystem } from './fx/cluster.js';
 import { Flyover } from './fx/flyover.js';
 import { buildBomb, setFins } from './fx/ordnance.js';
 import { Blast } from './fx/blast.js';
@@ -126,6 +127,20 @@ export class Strikes {
     this._dir = new THREE.Vector3();
     this._aim = new THREE.Vector3();
     this._impact = new THREE.Vector3();
+    this._clusterPoint = new THREE.Vector3();
+    this._clusterShip = null;this._clusterPlayer = null;
+    this.clusters = new ClusterSystem(scene, (x,z,t) => cb.surfaceHeight
+      ? cb.surfaceHeight(x,z,t) : field.height(x,z,t), {
+      burst: parent => {
+        this.blast.airburst(parent.p,0.16);
+        this.cb.toast?.('The carrier opened — multiple objects falling.', 'bad');
+      },
+      impact: (body,inert) => {
+        if(inert)return;
+        this._clusterPoint.set(body.p.x,body.p.y,body.p.z);
+        this.detonate(this._clusterPoint,this._clusterShip,this._clusterPlayer,body.kind);
+      },
+    });
   }
 
   arm(on, interval = 95){
@@ -134,10 +149,12 @@ export class Strikes {
     this.timer = on ? 48 : 1e9;
     this.wave = 0;
     this.flyover.abort();
+    this.clusters.reset();
     for(const b of this.bombs) this.scene.remove(b.mesh);
     this.bombs.length = 0;
     this.releaseKinds.length = 0;
     this.hazards.length = 0;
+    this.hazardFX.clear();
     this.effects.reset();
     if(this._trailAge){ this._trailAge.fill(0); this._trailCursor.fill(0); }
     for(const m of this.markers){
@@ -195,6 +212,11 @@ export class Strikes {
 
   release(pos, vel, index){
     const kind = this.releaseKinds[index] || this.storeKinds[index] || 'mk83';
+    if(munition(kind).cluster){
+      const released=this.clusters.spawn(kind,pos,vel,{windX:this._wind.x,windZ:this._wind.z,simTime:this.field.time});
+      const m=this.markers[index];if(m){m.live=false;m.mesh.visible=false;}
+      return released;
+    }
     const mesh = buildBomb(kind);
     mesh.position.copy(pos);
     setFins(mesh, 0);
@@ -223,7 +245,8 @@ export class Strikes {
      integrate it the same way, so both see it fall in the same place —
      but only the sailor's client is authoritative for what it does when
      it lands, because the sailor is the one who can see that. */
-  dropStore(kind, pos, vel){
+  dropStore(kind, pos, vel, env = {}){
+    if(munition(kind).cluster)return this.clusters.spawn(kind,pos,vel,env);
     const mesh = buildBomb(kind);
     mesh.position.set(pos.x, pos.y, pos.z);
     setFins(mesh, 0);
@@ -251,12 +274,14 @@ export class Strikes {
     this.updateMarkers(dt);
 
     // Residual effects finish while disarmed; arm() clears any live stores.
+    this._clusterShip=ship;this._clusterPlayer=playerPos;
+    this.clusters.update(dt);
     this.updateBombs(dt, ship, playerPos);
     this.updateTrails(dt);
     if(!this.active) return;
 
     this.flyover.update(dt, playerPos);
-    if(!this.flyover.active && this.bombs.length === 0){
+    if(!this.flyover.active && this.bombs.length === 0 && this.clusters.live === 0){
       this.timer -= dt;
       if(this.timer <= 0){
         this.timer = this.interval*(0.65 + stream('strikes').next()*0.7)/(1 + this.wave*0.05);
@@ -373,7 +398,11 @@ export class Strikes {
   detonate(point, ship, playerPos, kind = 'mk83'){
     const spec = munition(kind);
     const power = spec.blast?.power ?? 1;
-    this.blast.water(point, power);
+    const surface=this.cb.landHeight?.(point.x,point.z) ?? -40;
+    if(power>0){
+      if(surface>this.field.height(point.x,point.z)+0.1)this.blast.land(point,power);
+      else this.blast.water(point,power);
+    }
 
     // The two special families leave something behind that matters more
     // than the bang did.
@@ -394,8 +423,8 @@ export class Strikes {
       this.cb.toast?.('The water is burning. Do not sail into it.', 'bad');
     } else if(spec.family === 'chemical' && spec.cloud){
       this.hazards.push({ type:'cloud', point:{ x:point.x, y:point.y, z:point.z },
-        radius: spec.cloud.radius, age:0, ttl: spec.cloud.duration ?? 135, intensity:1 });
-      this.cb.toast?.('Something is spreading on the wind. Get upwind of it.', 'bad');
+        radius: spec.cloud.radius, rise:spec.cloud.rise, age:0, ttl: spec.cloud.duration ?? 135, intensity:1 });
+      if(!spec.internal)this.cb.toast?.('Something is spreading on the wind. Get upwind of it.', 'bad');
     }
 
     const d = playerPos ? playerPos.distanceTo(point) : 999;
@@ -409,20 +438,23 @@ export class Strikes {
       const force = Blast.impulseAt(point, ship.pos);
       if(force) ship.impulse(force, point);
     }
-    if(d < 90) this.cb.shake?.(THREE.MathUtils.clamp(1-d/90, 0, 1));
+    if(d < Math.min(90,spec.blast?.shockR ?? 90)) this.cb.shake?.(THREE.MathUtils.clamp(1-d/90, 0, 1));
     // Specific impulse on a person, in N·s. Deliberately a simple tuned
     // falloff rather than a weapons-effects fit: what it is for is
     // deciding whether the blast takes your spectacles off your face.
-    if(d < 220) this.cb.blastWave?.(power*2600/Math.pow(Math.max(d, 6), 1.5), d);
-    if(d < 55) this.cb.damage?.(THREE.MathUtils.clamp(1-d/55, 0, 1)*95,
+    if(d < (spec.blast?.shockR ?? 220)) this.cb.blastWave?.(power*2600/Math.pow(Math.max(d, 6), 1.5), d);
+    const wound=spec.blast?.woundR ?? 55,lethal=spec.blast?.lethalR ?? 16;
+    if(wound>0 && d < wound) this.cb.damage?.(THREE.MathUtils.clamp(1-d/wound, 0, 1)*95*Math.min(1,power),
       'A near miss. The water hit you like a wall.');
-    if(d < 16) this.cb.damage?.(200, 'You were where it landed.');
+    if(lethal>0 && d < lethal) this.cb.damage?.(200, 'You were where it landed.');
   }
 
   dispose(){
     this.arm(false);
     this.flyover.dispose();
     this.blast.dispose();
+    this.hazardFX.dispose();
+    this.clusters.dispose();
     for(const m of this.markers){ this.scene.remove(m.mesh); m.mesh.material.dispose(); }
     this.markerGeo.dispose();
     this.scene.remove(this.trails);

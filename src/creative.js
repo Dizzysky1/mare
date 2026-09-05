@@ -27,7 +27,7 @@ const clamp = THREE.MathUtils.clamp;
 const MUNITION_CHOICES = [...MUNITION_IDS, ...Object.keys(LOADOUTS)];
 const LOADOUT_LABEL = {
   he:'HE stick', precision:'precision (GBU)', fire:'incendiary run',
-  denial:'area denial', mixed:'mixed load',
+  denial:'area denial', mixed:'mixed load', cluster:'cluster run', clusterGas:'cluster gas run',
 };
 const munitionLabel = (id) => MUNITIONS[id] ? MUNITIONS[id].name : (LOADOUT_LABEL[id] || id);
 

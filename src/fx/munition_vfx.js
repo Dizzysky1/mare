@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PlumeGrid, relaxVelocity } from './plume_flow.js';
 import { makeParticlePool, makeSoftDot, makeSurfaceDisc, smooth01 } from './blast.js';
 
 /* ────────────────────────────────────────────────────────────────
@@ -7,9 +8,7 @@ import { makeParticlePool, makeSoftDot, makeSurfaceDisc, smooth01 } from './blas
    one-shot detonations like Blast — they are long-lived, continuously
    emitting effects that a hazard-tracking module feeds in every frame.
 
-   THE INTERFACE (undocumented elsewhere, defined here because nothing
-   upstream of this file exists yet — the player-effects module that
-   would track live hazards was never written):
+   The interface shared with strikes.js and munition_effects.js:
 
      hazards = [{
        type: 'fire' | 'cloud',
@@ -45,6 +44,7 @@ function makeHazParticle(){
   return {
     p: new THREE.Vector3(), v: new THREE.Vector3(),
     life: 0, maxLife: 1, age: 0,
+    rot:0, rotV:0, cell:0, aspect:1, heat:0, cooling:0, mixing:0.3, flow:null, flowVersion:0,
     size: 1, sizeGrowth: 0, fadeIn: 0.2, fadeOutFrac: 0.4,
     r: 1, g: 1, b: 1, jit: 1,
     grav: 0, drag: 0.3, hug: 0, turb: 0, tPhase: 0, windK: 1,
@@ -62,6 +62,8 @@ export class HazardFX {
     this.smokeN = opts.smokeParticles || 3000;
     this.flamePts = makeParticlePool(this.flameN, THREE.AdditiveBlending, sizeScale);
     this.smokePts = makeParticlePool(this.smokeN, THREE.NormalBlending, sizeScale);
+    this.flamePts.material.uniforms.uFire.value = 1;
+    this._time = 0;
     this.flamePts.renderOrder = 5;
     this.smokePts.renderOrder = 4;
     scene.add(this.flamePts, this.smokePts);
@@ -116,9 +118,10 @@ export class HazardFX {
     // hazard appearing/expiring never allocates inside update().
     const HN = opts.hazardSlots || 24;
     this._stateSlots = [];
-    for(let i = 0; i < HN; i++) this._stateSlots.push({ owner: null, flameAcc: 0, smokeAcc: 0, cloudAcc: 0, footprint: null });
+    for(let i = 0; i < HN; i++) this._stateSlots.push({ owner: null, flow:new PlumeGrid(), flameAcc: 0, smokeAcc: 0, cloudAcc: 0, footprint: null });
     this._manual = [];         // hazards created via spawnFire/spawnCloud
-    this._present = new Set(); // scratch, rebuilt each update to free stale slots
+    this._external = null;
+    this._flow = {x:0,y:0,z:0};
   }
 
   /* ── test-only direct spawners (see file header) ─────────────── */
@@ -138,6 +141,8 @@ export class HazardFX {
   /* ── per-frame ──────────────────────────────────────────────── */
   update(dt, hazards, camPos, wind){
     if(!Number.isFinite(dt) || dt <= 0) return;
+    this._time += dt;
+    this.flamePts.material.uniforms.uTime.value = this._time;
     const windX = (wind && Number.isFinite(wind.x)) ? wind.x : 0;
     const windZ = (wind && Number.isFinite(wind.z)) ? wind.z : 0;
 
@@ -146,13 +151,14 @@ export class HazardFX {
     for(let i = this._manual.length - 1; i >= 0; i--){
       const h = this._manual[i];
       h.age += dt;
-      if(h.age >= h.ttl) this._manual.splice(i, 1);
+      if(h.age >= h.ttl){
+        for(let j=i;j<this._manual.length-1;j++) this._manual[j]=this._manual[j+1];
+        this._manual.length--;
+      }
     }
 
-    this._present.clear();
-    if(hazards) for(const h of hazards) this._present.add(h);
-    for(const h of this._manual) this._present.add(h);
-    for(const slot of this._stateSlots) if(slot.owner && !this._present.has(slot.owner)) slot.owner = null;
+    this._external = hazards;
+    for(const slot of this._stateSlots) if(slot.owner && !this._hasHazard(slot.owner)) slot.owner = null;
 
     // reset the nearest-fire scratch before scanning
     for(let i = 0; i < this._lightHaz.length; i++){ this._lightHaz[i] = null; this._lightDist[i] = Infinity; }
@@ -160,12 +166,22 @@ export class HazardFX {
     if(hazards) for(const h of hazards) this._stepHazard(h, dt, windX, windZ, camPos);
     for(const h of this._manual) this._stepHazard(h, dt, windX, windZ, camPos);
 
+    // Continue advecting residual smoke after its source expires.
+    for(const slot of this._stateSlots){
+      const h=slot.owner;
+      if(h)slot.flow.moveSource(h.point);
+      slot.flow.advance(dt,h?.type || 'fire',h ? (h.intensity ?? 1)*Math.min(1,h.age) : 0,windX,windZ);
+    }
     this._assignLights(dt);
     this._updateFootprints(dt);
 
     this._updateParticles(this.flame, this.flamePts, dt, windX, windZ);
     this._updateParticles(this.smoke, this.smokePts, dt, windX, windZ);
     this._updateParticles(this.cloud, this.cloudPts, dt, windX, windZ);
+  }
+
+  _hasHazard(h){
+    return (this._external && this._external.includes(h)) || this._manual.includes(h);
   }
 
   /* Linear scan over a small fixed pool (default 24 concurrent hazards) —
@@ -180,6 +196,7 @@ export class HazardFX {
       if(!free && !slot.owner) free = slot;
     }
     const slot = free || this._stateSlots[this._stateSlots.length - 1];
+    slot.flow.reset(h.point,h.radius);
     slot.owner = h; slot.flameAcc = 0; slot.smokeAcc = 0; slot.cloudAcc = 0; slot.footprint = null;
     return slot;
   }
@@ -221,7 +238,7 @@ export class HazardFX {
     const r = h.radius;
     // flame: fast emission, short life, additive — the flicker itself
     // is what reads, so keep them small and numerous rather than big.
-    s.flameAcc += dt * (26 + 40*intensity) * (0.4 + r/14);
+    s.flameAcc += dt * (70 + 100*intensity) * (0.4 + r/14);
     let nFlame = Math.floor(s.flameAcc); s.flameAcc -= nFlame;
     for(; nFlame > 0; nFlame--){
       const q = this.flame[this._flameCursor];
@@ -229,13 +246,16 @@ export class HazardFX {
       const a = Math.random()*Math.PI*2, rr = Math.pow(Math.random(), 0.5)*r;
       const wy = this.field.height(h.point.x + Math.cos(a)*rr, h.point.z + Math.sin(a)*rr);
       q.p.set(h.point.x + Math.cos(a)*rr, wy + 0.2, h.point.z + Math.sin(a)*rr);
-      q.v.set((Math.random()-0.5)*1.5, 3 + Math.random()*4, (Math.random()-0.5)*1.5);
-      q.age = 0; q.life = q.maxLife = 0.35 + Math.random()*0.35;
+      q.v.set((Math.random()-0.5)*3.5, 1.5 + Math.random()*2.5, (Math.random()-0.5)*3.5);
+      q.flow=s.flow; q.flowVersion=s.flow.version;
+      q.age = 0; q.life = q.maxLife = 0.55 + Math.random()*0.55;
       q.fadeIn = 0.05; q.fadeOutFrac = 0.6;
-      q.size = (3.5 + Math.random()*3.5) * (0.5 + intensity*0.5);
+      q.size = (3.0 + Math.random()*3.0) * (0.5 + intensity*0.5);
       q.sizeGrowth = -0.3;
-      q.jit = 0.7 + Math.random()*0.3;
-      q.grav = -2; q.drag = 0.8; q.hug = 0; q.turb = 3; q.tPhase = Math.random()*Math.PI*2; q.windK = 0.15;
+      q.jit = 0.45 + Math.random()*0.3;
+      q.rot = Math.random()*6.283; q.rotV = (Math.random()-0.5)*2.2; q.cell = 1; q.aspect = 0.7;
+      q.heat = 1100; q.cooling = 1.8; q.mixing = 0.65;
+      q.grav = 0; q.drag = 0.8; q.hug = 0; q.turb = 3; q.tPhase = Math.random()*Math.PI*2; q.windK = 0.15;
       const hot = Math.random();
       q.r = 1.0; q.g = 0.35 + hot*0.45; q.b = 0.06 + hot*0.12;
     }
@@ -251,12 +271,15 @@ export class HazardFX {
       const wy = this.field.height(h.point.x + Math.cos(a)*rr, h.point.z + Math.sin(a)*rr);
       q.p.set(h.point.x + Math.cos(a)*rr, wy + 1.0, h.point.z + Math.sin(a)*rr);
       q.v.set(windX*0.3, 3.5 + Math.random()*2.5, windZ*0.3);
+      q.flow=s.flow; q.flowVersion=s.flow.version;
       q.age = 0; q.life = q.maxLife = 7 + Math.random()*5;
       q.fadeIn = 0.8; q.fadeOutFrac = 0.5;
-      q.size = (9 + Math.random()*7) * (0.6 + intensity*0.4);
-      q.sizeGrowth = 0.32;
-      q.jit = 0.65 + Math.random()*0.35;
-      q.grav = -1.1; q.drag = 0.35; q.hug = 0; q.turb = 0.7; q.tPhase = Math.random()*Math.PI*2; q.windK = 1;
+      q.size = (4 + Math.random()*4) * (0.6 + intensity*0.4);
+      q.sizeGrowth = 0.19;
+      q.jit = 0.45 + Math.random()*0.3;
+      q.rot = Math.random()*6.283; q.rotV = (Math.random()-0.5)*0.35; q.cell = Math.random()<0.65 ? 0 : 1; q.aspect = 0.9;
+      q.heat = 180 + Math.random()*120; q.cooling = 0.26; q.mixing = 0.85;
+      q.grav = 0; q.drag = 0.6; q.hug = 0; q.turb = 0.7; q.tPhase = Math.random()*Math.PI*2; q.windK = 1;
       const shade = 0.06 + Math.random()*0.10;
       q.r = shade; q.g = shade*0.95; q.b = shade*0.92;
     }
@@ -291,14 +314,17 @@ export class HazardFX {
       // and spreading" instead of billowing upward like smoke.
       const out = 0.15 + Math.random()*0.4;
       q.v.set(windX*0.85 + Math.cos(a)*out, 0.05, windZ*0.85 + Math.sin(a)*out);
+      q.flow=s.flow; q.flowVersion=s.flow.version;
       q.age = 0; q.life = q.maxLife = 10 + Math.random()*6;
       q.fadeIn = 1.2; q.fadeOutFrac = 0.4;
-      q.size = (14 + Math.random()*10) * (0.7 + intensity*0.3);
-      q.sizeGrowth = 0.12;
+      q.size = (10 + Math.random()*8) * (0.7 + intensity*0.3);
+      q.sizeGrowth = 0.06;
       // capped alpha jitter — a chemical haze you can still navigate near,
       // not a wall; NormalBlending keeps overlap from washing to solid.
-      q.jit = (0.30 + Math.random()*0.20) * (0.5 + 0.5*intensity);
-      q.grav = 0; q.drag = 0.6; q.hug = 1; q.turb = 0.5; q.tPhase = Math.random()*Math.PI*2; q.windK = 1;
+      q.jit = (0.65 + Math.random()*0.30) * (0.5 + 0.5*intensity);
+      q.rot = Math.random()*6.283; q.rotV = (Math.random()-0.5)*0.1; q.cell = Math.random()<0.6 ? 1 : 2; q.aspect = 0.28 + Math.random()*0.16;
+      q.heat = 0; q.cooling = 0; q.mixing = 0.18;
+      q.grav = 0.12; q.drag = 0.6; q.hug = 1; q.turb = 0.5; q.tPhase = Math.random()*Math.PI*2; q.windK = 1;
       const shade = 0.68 + Math.random()*0.14;
       q.r = shade*0.86; q.g = shade; q.b = shade*0.80;   // sickly, cold, desaturated green-grey
     }
@@ -320,7 +346,7 @@ export class HazardFX {
     for(const f of this.footprints){
       if(!f.hazard) continue;
       const h = f.hazard;
-      if(!this._present.has(h)){ f.hazard = null; f.mesh.visible = false; continue; }
+      if(!this._hasHazard(h)){ f.hazard = null; f.mesh.visible = false; continue; }
       const fade = Math.min(1, h.age/1.0) * smooth01(THREE.MathUtils.clamp((h.ttl - h.age)/2.5, 0, 1));
       const pulse = 0.85 + 0.15*Math.sin(h.age*9);
       const attr = f.mesh.geometry.attributes.position;
@@ -345,29 +371,31 @@ export class HazardFX {
     const arr = points.geometry.attributes.position.array;
     const sizeArr = points.geometry.attributes.aSize.array;
     const colArr = points.geometry.attributes.aColor.array;
+    const rotArr = points.geometry.attributes.aRot.array;
+    const floorArr = points.geometry.attributes.aFloor.array;
+    const aspectArr = points.geometry.attributes.aAspect.array;
     for(let i = 0; i < list.length; i++){
       const q = list[i], o3 = i*3, o4 = i*4;
       if(q.life > 0){
-        q.life -= dt; q.age += dt;
-        if(q.turb > 0){
-          q.v.x += Math.sin(q.age*6.1 + q.tPhase)*q.turb*dt;
-          q.v.z += Math.cos(q.age*4.3 + q.tPhase*1.6)*q.turb*dt;
-        }
-        if(q.windK > 0){
-          const wk = Math.min(1, 1.2*dt);
-          q.v.x += (windX*q.windK - q.v.x)*wk;
-          q.v.z += (windZ*q.windK - q.v.z)*wk;
-        }
-        // matches blast.js's convention: positive grav pulls down, negative
-        // grav is buoyancy (smoke/flame rising) — NOT a plain "+= accel".
-        // Unlike blast's ballistic droplets, drag here applies to ALL three
-        // axes: these are buoyant plumes, not falling debris, and without
-        // vertical drag a smoke particle would climb forever instead of
-        // settling at a terminal rise speed (buoyancy balanced by drag).
-        q.v.y -= q.grav*dt;
-        const k = Math.max(0, 1 - q.drag*dt);
-        q.v.x *= k; q.v.y *= k; q.v.z *= k;
-        q.p.addScaledVector(q.v, dt);
+        q.life -= dt; q.age += dt; q.rot += q.rotV*dt;
+        // Sample the pressure-projected velocity field at this particle.
+        // Cooling removes buoyancy continuously: rho_hot/rho_ambient =
+        // T_ambient/T_hot under pressure equilibrium (ideal gas law).
+        q.heat *= Math.exp(-q.cooling*dt);
+        const sampled=q.flow && q.flow.version===q.flowVersion && q.flow.sample(q.p.x,q.p.y,q.p.z,this._flow);
+        if(!sampled){this._flow.x=windX;this._flow.y=0;this._flow.z=windZ;}
+        else q.heat=relaxVelocity(q.heat,this._flow.heat,0.8,dt);
+        const flow = this._flow, drag = q.drag;
+        const buoyancy = 9.81*q.heat/(288.15+q.heat) - q.grav;
+        const vx=q.v.x, vy=q.v.y, vz=q.v.z;
+        q.v.x = relaxVelocity(vx, flow.x*q.windK, 1.2, dt);
+        q.v.z = relaxVelocity(vz, flow.z*q.windK, 1.2, dt);
+        q.v.y = relaxVelocity(vy, sampled ? flow.y : buoyancy/drag, drag, dt);
+        // Trapezoidal transport avoids first-order distance bias as frame
+        // time changes while the exponential response stays stable.
+        q.p.x += (vx+q.v.x)*0.5*dt;
+        q.p.y += (vy+q.v.y)*0.5*dt;
+        q.p.z += (vz+q.v.z)*0.5*dt;
         if(q.hug){
           const wy = this.field.height(q.p.x, q.p.z);
           if(q.p.y < wy + 0.4) q.p.y = wy + 0.4;
@@ -378,8 +406,15 @@ export class HazardFX {
         arr[o3]=q.p.x; arr[o3+1]=q.p.y; arr[o3+2]=q.p.z;
         const fadeIn = q.fadeIn > 0 ? smooth01(q.age/q.fadeIn) : 1;
         const fadeOut = smooth01(q.life/(q.maxLife*q.fadeOutFrac));
-        const growth = Math.max(0.15, 1 + q.sizeGrowth*q.age);
+        // Diffusive spread: variance grows linearly with time, so radius
+        // grows as sqrt(time), rather than an ever-accelerating smoke blob.
+        const growth = Math.sqrt(Math.max(0.15, 1 + 2*q.sizeGrowth*q.age));
         sizeArr[i] = q.size*growth;
+        rotArr[i*2] = q.rot; rotArr[i*2+1] = q.cell;
+        aspectArr[i] = q.aspect;
+        // Fade the density into its local free surface before depth testing
+        // clips it. This resolves hard water/quad intersection seams.
+        floorArr[i] = this.field.height(q.p.x,q.p.z);
         colArr[o4]=q.r; colArr[o4+1]=q.g; colArr[o4+2]=q.b;
         colArr[o4+3] = fadeIn*fadeOut*q.jit;
       } else {
@@ -389,6 +424,22 @@ export class HazardFX {
     points.geometry.attributes.position.needsUpdate = true;
     points.geometry.attributes.aSize.needsUpdate = true;
     points.geometry.attributes.aColor.needsUpdate = true;
+    points.geometry.attributes.aRot.needsUpdate = true;
+    points.geometry.attributes.aAspect.needsUpdate = true;
+    points.geometry.attributes.aFloor.needsUpdate = true;
+  }
+
+  clear(){
+    this._manual.length=0;this._external=null;
+    for(const slot of this._stateSlots){slot.owner=null;slot.footprint=null;slot.flow.remaining=0;}
+    for(const q of this.flame)q.life=0;
+    for(const q of this.smoke)q.life=0;
+    for(const q of this.cloud)q.life=0;
+    for(const f of this.footprints){f.hazard=null;f.mesh.visible=false;}
+    for(const L of this.lights)L.light.intensity=0;
+    this._updateParticles(this.flame,this.flamePts,0,0,0);
+    this._updateParticles(this.smoke,this.smokePts,0,0,0);
+    this._updateParticles(this.cloud,this.cloudPts,0,0,0);
   }
 
   dispose(){

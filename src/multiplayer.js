@@ -223,8 +223,9 @@ export class Session {
   sendDrop(rel){
     this.net.send('drop', {
       t: this.now(), id: rel.munitionId,
-      p: [ +rel.pos.x.toFixed(2), +rel.pos.y.toFixed(2), +rel.pos.z.toFixed(2) ],
-      v: [ +rel.vel.x.toFixed(2), +rel.vel.y.toFixed(2), +rel.vel.z.toFixed(2) ],
+      p: [rel.pos.x,rel.pos.y,rel.pos.z],
+      v: [rel.vel.x,rel.vel.y,rel.vel.z],
+      windX:rel.windX,windZ:rel.windZ,simTime:rel.simTime,
     }, true);
   }
 

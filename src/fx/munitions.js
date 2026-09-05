@@ -73,9 +73,41 @@ export const MUNITIONS = {
     cloud:  { radius: 58, rise: 9, duration: 135, damage: 14, driftWithWind: true },
     audio:  { boom: 0.35, hiss: 1.0 },
   },
+
+  // Fictional game carriers. Payloads are independent simulated bodies;
+  // these values define gameplay scale, not a real weapon specification.
+  cluster: {
+    id:'cluster', name:'cluster bomb', family:'he', mass:360, calibre:0.42, length:2.6, Cd:0.38,
+    fuze:'cluster', burstAlt:120, armTime:0.4,
+    cluster:{ child:'cluster_helet', count:24, separationEnergy:16000 },
+    blast:{ power:0, lethalR:0, woundR:0, shockR:0 }, audio:{boom:0.15},
+  },
+  cluster_gas: {
+    id:'cluster_gas', name:'cluster gas bomb', family:'chemical', mass:280, calibre:0.44, length:2.7, Cd:0.42,
+    fuze:'cluster', burstAlt:100, armTime:0.4,
+    cluster:{ child:'cluster_gaslet', count:12, separationEnergy:9000 },
+    blast:{ power:0, lethalR:0, woundR:0, shockR:0 }, audio:{boom:0.12},
+  },
+  cluster_helet: {
+    id:'cluster_helet', name:'explosive bomblet', internal:true, family:'he',
+    mass:8, calibre:0.12, length:0.32, Cd:0.72, fuze:'impact',
+    blast:{power:0.18,lethalR:2.5,woundR:12,shockR:38},audio:{boom:0.25},
+  },
+  cluster_gaslet: {
+    id:'cluster_gaslet', name:'gas bomblet', internal:true, family:'chemical',
+    mass:12, calibre:0.16, length:0.42, Cd:0.82, fuze:'impact',
+    blast:{power:0.04,lethalR:0,woundR:0,shockR:12},
+    cloud:{radius:15,rise:3,duration:65,damage:5,driftWithWind:true},audio:{boom:0.12,hiss:0.4},
+  },
+  cluster_casing: {
+    id:'cluster_casing',name:'empty carrier section',internal:true,family:'debris',
+    mass:60,calibre:0.45,length:1.3,Cd:1.1,fuze:'inert',
+    blast:{power:0,lethalR:0,woundR:0,shockR:0},audio:{boom:0},
+  },
+
 };
 
-export const MUNITION_IDS = Object.keys(MUNITIONS);
+export const MUNITION_IDS = Object.keys(MUNITIONS).filter(id => !MUNITIONS[id].internal);
 
 export function munition(id){ return MUNITIONS[id] || MUNITIONS.mk83; }
 
@@ -86,7 +118,9 @@ export const LOADOUTS = {
   precision: ['gbu12','gbu12','mk83'],
   fire:      ['napalm','napalm','napalm','mk82'],
   denial:    ['gas','gas','mk82'],
-  mixed:     ['mk83','napalm','gas','mk82','mk83'],
+  mixed:     ['mk83','napalm','gas','cluster','cluster_gas'],
+  cluster:   ['cluster','cluster','mk82'],
+  clusterGas:['cluster_gas','cluster_gas','gas'],
 };
 
 /* Chosen per sortie; later waves get nastier. */
@@ -94,6 +128,6 @@ export function loadoutForWave(wave, rng = Math.random){
   if(wave <= 1) return LOADOUTS.he;
   const pool = wave < 3 ? ['he','he','precision','fire']
              : wave < 5 ? ['he','precision','fire','denial']
-                        : ['fire','denial','mixed','precision'];
+                        : ['fire','denial','mixed','precision','cluster','clusterGas'];
   return LOADOUTS[pool[Math.floor(rng()*pool.length)]] || LOADOUTS.he;
 }

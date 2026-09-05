@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>MARE flight and effects checks</title>
+<style>body{margin:0;background:#10232d;color:#eef;font:13px system-ui}canvas{display:block;width:100vw!important;height:100vh!important}#panel{position:fixed;z-index:2;top:8px;left:8px;background:#08151ddd;padding:10px;max-width:96vw}button{margin:3px;padding:5px}pre{white-space:pre-wrap;max-height:30vh;overflow:auto;margin:5px}#status{font-weight:bold}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"}}</script>
+<div id="panel"><div>MARE — deterministic effects review / real ocean shader</div>
+<div id="effects"></div><div id="stages"></div>
+<button id="day">Day</button><button id="night">Night</button><button id="near">30 m</button><button id="mid">150 m</button><button id="far">600 m</button><button id="play">Play / pause</button>
+<button id="bench">Measure 120 frames at 3456 × 2234</button><button id="flight">Math checks</button><button id="integration">Gameplay checks</button><div id="status">Loading</div><pre id="report"></pre></div>
+<script>
+addEventListener('error',e=>document.querySelector('#status').textContent='ERROR '+e.message+' '+e.filename+':'+e.lineno);
+addEventListener('unhandledrejection',e=>document.querySelector('#status').textContent='ERROR '+e.reason);
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {Blast} from '../src/fx/blast.js';
+import {HazardFX} from '../src/fx/munition_vfx.js';
+import {WaveField} from '../src/waves.js';
+import {Ocean,TIERS} from '../src/ocean.js';
+import {Sky} from '../src/sky.js';
+import {ClusterSystem} from '../src/fx/cluster.js';
+import {munition} from '../src/fx/munitions.js';
+const status=document.querySelector('#status'), report=document.querySelector('#report');
+addEventListener('error',e=>status.textContent='ERROR: '+e.message);
+addEventListener('unhandledrejection',e=>status.textContent='ERROR: '+e.reason);
+const renderer=new THREE.WebGLRenderer({antialias:false});renderer.setPixelRatio(1);
+renderer.setSize(innerWidth,innerHeight);document.body.append(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.2,20000);
+const field=new WaveField(20);field.configure({swell:0.45,windDeg:0});
+const sky=new Sky(scene,camera),ocean=new Ocean(scene,field,sky.uniforms,TIERS.high);
+const marker=new THREE.Mesh(new THREE.BoxGeometry(4,3,9),new THREE.MeshStandardMaterial({color:0xc6bfa3,roughness:0.65}));marker.position.set(19,2,0);scene.add(marker);
+let blast,hazards,clusters,impactCount=0,age=0,kind='water',paused=true,hour=15,distance=150,seed=1,last=performance.now();
+let rng=1;function random(){rng|=0;rng=rng+0x6D2B79F5|0;let t=Math.imul(rng^rng>>>15,1|rng);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;}
+function seeded(fn){const old=Math.random;Math.random=random;try{return fn();}finally{Math.random=old;}}
+function cameraSetup(){camera.position.set(0,distance===30?7:distance===150?16:35,distance);camera.lookAt(0,kind.startsWith('cluster')?60:(kind==='fire'||kind==='gas')?3:distance===30?12:15,0);}
+function reset(){blast?.dispose();hazards?.dispose();clusters?.dispose();impactCount=0;age=0;field.time=0;rng=seed;
+ seeded(()=>{blast=new Blast(scene,field);hazards=new HazardFX(scene,field);const point={x:0,y:field.height(0,0),z:0};
+ clusters=new ClusterSystem(scene,(x,z,t)=>field.height(x,z,t),{burst:p=>blast.airburst(p.p,.16),impact:(s,inert)=>{if(inert)return;impactCount++;const spec=munition(s.kind);blast.water(s.p,spec.blast.power);if(spec.cloud)hazards.spawnCloud(s.p,{radius:spec.cloud.radius,ttl:spec.cloud.duration});}});
+ if(kind==='cluster'||kind==='cluster_gas')clusters.spawn(kind,{x:-350,y:220,z:0},{x:70,y:-15,z:0},{windX:2,windZ:0,simTime:0});
+ else if(kind==='fire')hazards.spawnFire(point);else if(kind==='gas')hazards.spawnCloud(point);else if(kind==='overlap'){for(const x of [-20,20])for(const z of [-20,20])blast.water({x,y:field.height(x,z),z},1);}else blast[kind](point,1);});
+}
+function step(dt){field.update(dt);clusters.update(dt);seeded(()=>{blast.update(dt,camera.position);hazards.update(dt,null,camera.position,{x:2,z:0});});age+=dt;}
+function render(){sky.update(hour,0,0,camera.position);sky.uniforms.uTime.value=field.time;ocean.update(camera,renderer.domElement.height);renderer.render(scene,camera);status.textContent=`${kind} · ${age.toFixed(2)} s · ${hour===15?'day':'night'} · ${distance} m · ${renderer.info.render.calls} draw calls · ${clusters.live} falling bodies · ${impactCount} bomblet impacts`;}
+function stage(t){paused=true;if(t<age)reset();while(age<t)step(Math.min(1/120,t-age));render();}
+for(const name of ['water','land','fire','gas','overlap','cluster','cluster_gas']){const b=document.createElement('button');b.textContent=name;b.onclick=()=>{kind=name;if(name.startsWith('cluster'))distance=300;cameraSetup();paused=true;reset();stage(name==='gas'?5:name==='fire'?2:0.5);};document.querySelector('#effects').append(b);}
+for(const t of [0.05,0.5,2,5,6,10,20]){const b=document.createElement('button');b.textContent=`${t} s`;b.onclick=()=>stage(t);document.querySelector('#stages').append(b);}
+for(const [id,h] of [['day',15],['night',22]])document.getElementById(id).onclick=()=>{hour=h;render();};
+for(const [id,d] of [['near',30],['mid',150],['far',600]])document.getElementById(id).onclick=()=>{distance=d;cameraSetup();render();};
+document.querySelector('#play').onclick=()=>{paused=!paused;last=performance.now();};
+document.querySelector('#integration').onclick=async()=>{try{const {integrationChecks}=await import('./integration.mjs');const {shoreChecks}=await import('./shore.mjs');report.textContent='PASS: '+JSON.stringify({integration:integrationChecks(),shore:shoreChecks()},null,2);}catch(e){report.textContent='FAIL: '+e.stack;}};
+document.querySelector('#flight').onclick=async()=>{try{const {flightChecks}=await import('./flight.mjs');const {plumeChecks}=await import('./plume.mjs');const {clusterChecks}=await import('./clusters.mjs');report.textContent='PASS: '+JSON.stringify({flight:flightChecks(),plume:plumeChecks(),clusters:clusterChecks()},null,2);}catch(e){report.textContent='FAIL: '+e.stack;}};
+document.querySelector('#bench').onclick=()=>{paused=true;renderer.setSize(3456,2234);camera.aspect=3456/2234;camera.updateProjectionMatrix();reset();stage(kind==='cluster_gas'?12:kind==='cluster'?6:kind==='gas'?20:kind==='fire'?8:0.05);
+ const gl=renderer.getContext(), pixel=new Uint8Array(4);for(let i=0;i<12;i++){step(1/60);render();}gl.finish();const start=performance.now();let maxCalls=0;
+ for(let i=0;i<120;i++){step(1/60);render();gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);maxCalls=Math.max(maxCalls,renderer.info.render.calls);}
+ const ms=(performance.now()-start)/120;report.textContent=`${kind}: ${ms.toFixed(2)} ms/frame (${(1000/ms).toFixed(1)} fps throughput), GPU synchronized; 3456 × 2234; ${maxCalls} peak calls; real ocean High tier, no post processing.\n`+report.textContent;
+ renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();render();};
+function tick(now){requestAnimationFrame(tick);if(!paused){step(Math.min(0.05,(now-last)/1000));render();}last=now;}
+cameraSetup();reset();stage(0.5);requestAnimationFrame(tick);
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();render();});
+</script></html>

@@ -21,7 +21,7 @@ import * as THREE from 'three';
                   buildCanisterKit().
    ──────────────────────────────────────────────────────────────── */
 
-export const KINDS = ['mk82', 'mk83', 'gbu12', 'napalm', 'gas'];
+export const KINDS = ['mk82', 'mk83', 'gbu12', 'napalm', 'gas', 'cluster', 'cluster_gas'];
 
 const SPEC = {
   mk82:  { length:2.20, calibre:0.27, bodyColor:0x41483a, bandColor:0x737866, stripeColor:0xaa8c2c, finScale:1.00 },
@@ -41,6 +41,17 @@ const SPEC = {
      the loudest colour in the whole set: reading it is the mechanic. */
   gas: { length:2.40, calibre:0.36, style:'canister', fins:true,
           bodyColor:0x47513e, bandColor:0x2d3226, stripeColor:0xccd766 },
+  cluster: {length:2.6,calibre:0.42,style:'canister',fins:true,
+    bodyColor:0x454b3d,bandColor:0x292c25,stripeColor:0xd4ae46},
+  cluster_gas: {length:2.7,calibre:0.44,style:'canister',fins:true,
+    bodyColor:0x415448,bandColor:0x252e29,stripeColor:0xb6d28b},
+  cluster_helet: {length:0.32,calibre:0.12,style:'canister',fins:true,
+    bodyColor:0x4c5140,bandColor:0x30332c,stripeColor:0xd1b354},
+  cluster_gaslet: {length:0.42,calibre:0.16,style:'canister',fins:true,
+    bodyColor:0x4c6250,bandColor:0x28372b,stripeColor:0xb6d28b},
+  cluster_casing: {length:1.3,calibre:0.45,style:'canister',
+    bodyColor:0x55594d,bandColor:0x30332c,stripeColor:0x44483b},
+
 };
 
 function kindName(kind){ return SPEC[kind] ? kind : 'mk83'; }

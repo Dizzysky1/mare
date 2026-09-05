@@ -203,7 +203,7 @@ addEventListener('keydown', e => {
       // the OTHER end; without this the bomb exists on the sailor's screen
       // and nowhere on the pilot's, which is exactly backwards.
       const rel = pilotSeat.release();
-      if(rel && strikes) strikes.dropStore(rel.munitionId, rel.pos, rel.vel);
+      if(rel && strikes) strikes.dropStore(rel.munitionId, rel.pos, rel.vel, rel);
       e.preventDefault();
     }
     if(e.code === 'KeyV') pilotSeat.toggleView();
@@ -291,6 +291,8 @@ async function boot(){
   buildFollower();
 
   strikes = new Strikes(scene, field, audio, {
+    surfaceHeight:(x,z,t)=>Math.max(field.height(x,z,t),world.heightAt(x,z)),
+    landHeight:(x,z)=>world.heightAt(x,z),
     toast: (t, k) => ui.toast(t, k),
     shake: (a) => { if(player) player.shake = Math.max(player.shake, a); },
     damage: (amount, why) => {
@@ -434,6 +436,10 @@ function startMode(key, mpWorld){
   if(mode.pilot){
     // No hull, no body, no needs. One aircraft, one tank, one sortie.
     disposePilot();
+    // Sample the actual starting wind/density before solving flight trim;
+    // constructor defaults otherwise give the jet a first-frame gust step.
+    weather.update(0, { hour, elapsed, nearLand:0, latitudeish:0.5 });
+    atmos.update(1/60, { hour, weather, nearLand:0 });
     pilotSeat = new Pilot({
       scene, field, camera, session, atmosphere:atmos, weather,
       onToast:(t,k)=>ui.toast(t,k),
@@ -790,7 +796,7 @@ function beginSession(role){
     onDrop: d => {
       // Both ends fly the same store from the same release conditions.
       if(strikes) strikes.dropStore(d.id, { x:d.p[0], y:d.p[1], z:d.p[2] },
-                                          { x:d.v[0], y:d.v[1], z:d.v[2] });
+                                          { x:d.v[0], y:d.v[1], z:d.v[2] }, d);
       if(role === 'sailor') ui.toast('Something has come off it.', 'bad');
     },
     onHit: h => {

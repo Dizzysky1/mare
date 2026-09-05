@@ -17,15 +17,9 @@ import * as THREE from 'three';
       which is exactly how you get the featureless cotton-wool blob
       this file used to draw.
    2. Sprite size must be in METRES and converted with the real
-      projection, not a magic pixel constant. gl_PointSize is in
-      drawing-buffer pixels, so a fixed "sizeScale" makes the whole
-      effect change physical size when the canvas resolution or the FOV
-      changes — the same detonation that looked passable in a 1280-wide
-      preview is a screen-filling blob at 800px and a puff of dust on a
-      3456px display. uScale is now half the drawing-buffer height and
-      the shader multiplies by projectionMatrix[1][1] (= 1/tan(fov/2)),
-      which is the exact perspective divide, so aSize is a diameter in
-      world metres at any resolution.
+      projection, not a magic pixel constant. Instanced quads are expanded
+      in camera space before projection, so the same physical diameter
+      survives FOV changes, Retina displays and offscreen render targets.
    3. Mass must not glow. The flash is a genuine light source
       (additive, tiny, gone in ~0.1s); the column, crown, curtain,
       surge and mist are displaced water and are normal-blended so they
@@ -133,8 +127,12 @@ function buildAtlas(){
 
   const tex = new THREE.CanvasTexture(atlas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = true;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  // Each atlas cell is independent. Whole-atlas mipmaps eventually blend
+  // neighbouring cells; at distance a droplet then becomes somebody else's
+  // smoke mask. Linear sampling preserves the transparent cell gutters.
+  tex.flipY = false;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.needsUpdate = true;
@@ -142,71 +140,121 @@ function buildAtlas(){
 }
 export function spriteAtlas(){ if(!_atlas) _atlas = buildAtlas(); return _atlas; }
 
-/* aSize is a world-space DIAMETER in metres. uScale is half the drawing
-   buffer height in pixels; projectionMatrix[1][1] is 1/tan(fov/2). The
-   product is exactly the perspective projection of a sphere's diameter,
-   which is what makes the effect resolution- and FOV-independent. */
+/* Camera-facing instanced quads keep sizes in metres all the way through
+   the projection matrix. Point sprites have a hardware diameter limit and
+   disappear when their centre crosses a clip plane even if the plume still
+   covers the view. Four vertices and six indices per instance remove both
+   failure modes, still using one draw call per pool. Flattening the quad
+   also reduces fragment work for the ground-hugging gas layer. */
 export const PARTICLE_VERT = /* glsl */`
+attribute vec2 corner;
 attribute float aSize;
+attribute float aAspect;
+attribute float aFloor;
 attribute vec4 aColor;
-attribute vec2 aRot;      // x: rotation (rad), y: atlas cell 0..3
+attribute vec2 aRot;
 varying vec4 vColor;
 varying vec2 vRot;
 varying vec2 vCell;
-uniform float uScale;
+varying vec2 vUv;
+varying vec3 vWorldPosition;
+varying float vHeight;
 void main(){
   vColor = aColor;
   vRot = vec2(cos(aRot.x), sin(aRot.x));
   vCell = vec2(mod(aRot.y, 2.0), floor(aRot.y*0.5));
+  vUv = corner + 0.5;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = aSize * uScale * projectionMatrix[1][1] / max(0.35, -mv.z);
+  mv.xy += corner * vec2(aSize, aSize*aAspect);
+  vWorldPosition = (modelMatrix*vec4(position,1.0)).xyz
+    + vec3(viewMatrix[0][0],viewMatrix[1][0],viewMatrix[2][0])*corner.x*aSize
+    + vec3(viewMatrix[0][1],viewMatrix[1][1],viewMatrix[2][1])*corner.y*aSize*aAspect;
+  vHeight = vWorldPosition.y - aFloor;
   gl_Position = projectionMatrix * mv;
 }`;
 export const PARTICLE_FRAG = /* glsl */`
 uniform sampler2D uMap;
+uniform float uLight;
+uniform float uFire;
+uniform float uTime;
 varying vec4 vColor;
 varying vec2 vRot;
 varying vec2 vCell;
+varying vec2 vUv;
+varying vec3 vWorldPosition;
+varying float vHeight;
+// Quintic-interpolated 3D noise has continuous first and second
+// derivatives across cell boundaries. Three octaves resolve the large
+// rolls and smaller folds of a flame without periodic stripe patterns.
+float hash31(vec3 p){
+  p=fract(p*0.1031);p+=dot(p,p.yzx+33.33);
+  return fract((p.x+p.y)*p.z);
+}
+float noise3(vec3 p){
+  vec3 i=floor(p),f=fract(p);f=f*f*f*(f*(f*6.0-15.0)+10.0);
+  return mix(mix(mix(hash31(i),hash31(i+vec3(1,0,0)),f.x),
+                 mix(hash31(i+vec3(0,1,0)),hash31(i+vec3(1,1,0)),f.x),f.y),
+             mix(mix(hash31(i+vec3(0,0,1)),hash31(i+vec3(1,0,1)),f.x),
+                 mix(hash31(i+vec3(0,1,1)),hash31(i+vec3(1,1,1)),f.x),f.y),f.z);
+}
+float flameNoise(vec3 p){return noise3(p)*0.57 + noise3(p*2.03+4.7)*0.29 + noise3(p*4.11+9.2)*0.14;}
 void main(){
-  vec2 p = gl_PointCoord - 0.5;
-  // per-particle rotation: the cheapest possible defence against a
-  // thousand identically-oriented sprites reading as one repeated stamp.
+  vec2 p = vUv - 0.5;
   vec2 r = vec2(p.x*vRot.x - p.y*vRot.y, p.x*vRot.y + p.y*vRot.x) + 0.5;
-  r = clamp(r, 0.006, 0.994);
-  float a = texture2D(uMap, (r + vCell)*0.5).a * vColor.a;
+  if(uFire < 0.5 && (any(lessThan(r, vec2(0.0))) || any(greaterThan(r, vec2(1.0))))) discard;
+  float density = texture2D(uMap, (clamp(r, 0.002, 0.998) + vCell)*0.5).a;
+  vec3 color = vColor.rgb;
+  if(uFire > 0.5){
+    // Sample a shared world-space density field, advected upward. Sheets
+    // that overlap see the same folds, rather than unrelated sprite noise.
+    vec3 domain = vWorldPosition*vec3(0.65,0.9,0.65) - vec3(0.0,uTime*1.7,0.0);
+    float n = flameNoise(domain);
+    float y = vUv.y;
+    float width = 0.46*(1.0-0.58*y);
+    float core = 1.0-smoothstep(width*0.15,width,abs(vUv.x-0.5));
+    float envelope = core*smoothstep(0.0,0.18,y)*(1.0-smoothstep(0.18,1.0,y));
+    density = envelope*smoothstep(0.25,0.72,n);
+    float heat = clamp(core*(1.0-y)*(0.45+n),0.0,1.0);
+    color = mix(vec3(0.7,0.055,0.005),vec3(1.0,0.72,0.18),heat);
+  }
+  // Beer-Lambert transmittance: overlapping thin puffs accumulate optical
+  // depth instead of immediately clipping to opaque white. The texture is
+  // a projected density field, and aColor.a is its time-varying depth.
+  float a = (1.0 - exp(-density * max(0.0, vColor.a)))*smoothstep(0.0,0.65,vHeight);
   if(a <= 0.004) discard;
-  gl_FragColor = vec4(vColor.rgb, a);
+  gl_FragColor = vec4(color * uLight, a);
 }`;
 
 export function makeParticlePool(n, blending, scale){
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n*3), 3));
-  g.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(n), 1));
-  g.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(n*4), 4));
-  g.setAttribute('aRot', new THREE.BufferAttribute(new Float32Array(n*2), 2));
+  // `scale` remains accepted for older callers; projection now supplies
+  // pixel size exactly, including render targets and the quality governor.
+  const g = new THREE.InstancedBufferGeometry();
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  g.setAttribute('corner', new THREE.BufferAttribute(new Float32Array([-.5,-.5,.5,-.5,.5,.5,-.5,.5]), 2));
+  g.setAttribute('position', new THREE.InstancedBufferAttribute(new Float32Array(n*3), 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aSize', new THREE.InstancedBufferAttribute(new Float32Array(n), 1).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aAspect', new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aFloor', new THREE.InstancedBufferAttribute(new Float32Array(n).fill(-1e6), 1).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(n*4), 4).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aRot', new THREE.InstancedBufferAttribute(new Float32Array(n*2), 2).setUsage(THREE.DynamicDrawUsage));
+  g.instanceCount = n;
   const mat = new THREE.ShaderMaterial({
     vertexShader: PARTICLE_VERT, fragmentShader: PARTICLE_FRAG,
-    uniforms: { uScale: { value: scale || 600 }, uMap: { value: spriteAtlas() } },
-    transparent: true, depthWrite: false, blending,
+    uniforms: { uMap: { value: spriteAtlas() }, uLight: { value: 1 }, uFire: { value:0 }, uTime: { value:0 } },
+    transparent: true, depthWrite: false, blending, side:THREE.DoubleSide,
   });
-  const pts = new THREE.Points(g, mat);
+  const pts = new THREE.Mesh(g, mat);
   pts.frustumCulled = false;
+  pts.onBeforeRender = (renderer, scene) => {
+    const env = scene.userData.particleEnvironment;
+    // Emission keeps its energy at night; spray/smoke reflect the same
+    // day/storm lighting as the sea, with a modest moonlight floor.
+    mat.uniforms.uLight.value = blending === THREE.AdditiveBlending || !env ? 1
+      : (1 - 0.82*env.uNight.value)*(1 - 0.35*env.uStorm.value);
+  };
   return pts;
 }
 
-/* The point-size maths needs the drawing buffer height, and neither Blast
-   nor HazardFX is handed the renderer (they get scene + field only, and
-   changing that signature means editing strikes.js, which this pass does
-   not own). Reading it off the canvas element is a small hack, but it is
-   read-only, allocation-free, and it is what makes the effects the same
-   physical size on every display — see the header. */
-export function canvasHeight(){
-  const c = document.getElementById('view') || document.querySelector('canvas');
-  return (c && c.height) || 1080;
-}
-
-/* radial-gradient sprite for the foam/scorch patches — one canvas,
-   shared by every pooled disc. */
 export function makeSoftDot(){
   const c = document.createElement('canvas');
   c.width = c.height = 64;
@@ -354,7 +402,7 @@ export class Blast {
     this.flashN = opts.flashParticles || 420;
     this.bodyN = opts.bodyParticles || 5200;
     this.mistN = opts.mistParticles || 2200;
-    const uScale = opts.sizeScale || canvasHeight()*0.5;
+    const uScale = opts.sizeScale;
     this.flashPts = makeParticlePool(this.flashN, THREE.AdditiveBlending, uScale);
     this.bodyPts = makeParticlePool(this.bodyN, THREE.NormalBlending, uScale);
     this.mistPts = makeParticlePool(this.mistN, THREE.NormalBlending, uScale);
@@ -441,17 +489,24 @@ export class Blast {
 
     // scratch, reused every call — nothing in water()/land()/update() allocates
     this._d = new THREE.Vector3();
-    this._px = 0;
   }
 
   /* ── detonation entry points ─────────────────────────────────── */
+
+  // A carrier opening is an airborne puff, not a water detonation:
+  // no surface rings, column, damage impulse or foam at release altitude.
+  airburst(point,power=0.2){
+    if(!point || !Number.isFinite(point.x+point.y+point.z))return;
+    this._spawnFlash(point,power,false,Math.sqrt(power));
+    this._spawnMist(point,power,false,Math.sqrt(power));
+  }
 
   water(point, power = 1){ this._detonate(point, power, true); }
   land(point, power = 1){ this._detonate(point, power, false); }
 
   _detonate(point, power, isWater){
     if(!point || !Number.isFinite(point.x + point.y + point.z)) return;
-    power = Number.isFinite(power) ? THREE.MathUtils.clamp(power, 0.15, 3.0) : 1;
+    power = Number.isFinite(power) ? THREE.MathUtils.clamp(power, 0.015, 3.0) : 1;
     // Screen flash is raised here but attenuated by camera distance in
     // update(): main.js adds strikes.flash straight onto the composite, so
     // an un-attenuated flash whites out the entire screen for a bomb that
@@ -841,16 +896,6 @@ export class Blast {
 
   update(dt, camPos){
     if(!Number.isFinite(dt) || dt <= 0) return;
-
-    // keep the point-size scale honest if the canvas was resized or the
-    // quality governor changed the pixel ratio (both happen at runtime)
-    const h = canvasHeight()*0.5;
-    if(h !== this._px){
-      this._px = h;
-      this.flashPts.material.uniforms.uScale.value = h;
-      this.bodyPts.material.uniforms.uScale.value = h;
-      this.mistPts.material.uniforms.uScale.value = h;
-    }
 
     if(this._flashRaw > 0){
       if(this._flashAtten < 0){
