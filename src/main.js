@@ -871,7 +871,7 @@ function frame(){
 
   /* ── ordnance ───────────────────────────────────────────── */
   if(strikes && simDt > 0){
-    strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip, player ? player.pos : focus);
+    strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip, player ? player.pos : focus, wind);
   }
 
   /* ── the thing that keeps pace ──────────────────────────── */

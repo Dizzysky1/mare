@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { Flyover } from './fx/flyover.js';
 import { buildBomb, setFins } from './fx/ordnance.js';
 import { Blast } from './fx/blast.js';
+import { HazardFX } from './fx/munition_vfx.js';
+import { munition } from './fx/munitions.js';
 import { stream } from './rng.js';
 
 /* Contested waters. Flight, stores and blast visuals live in focused
@@ -25,6 +27,11 @@ export class Strikes {
     this.flash = 0;
 
     this.blast = new Blast(scene, field);
+    // Hazards outlive the store that made them: fire has to be steered
+    // around and a cloud has to be got upwind of, long after the bang.
+    this.hazardFX = new HazardFX(scene, field);
+    this.hazards = [];
+    this._wind = new THREE.Vector3();
     this.flyover = new Flyover(scene, {
       audio,
       makeStore: (index) => {
@@ -67,6 +74,7 @@ export class Strikes {
     for(const b of this.bombs) this.scene.remove(b.mesh);
     this.bombs.length = 0;
     this.releaseKinds.length = 0;
+    this.hazards.length = 0;
     for(const m of this.markers){
       m.live = false; m.released = false; m.impact = null;
       m.mesh.visible = false;
@@ -128,14 +136,15 @@ export class Strikes {
       bombVel.x = (planned.x-pos.x)/fallT;
       bombVel.z = (planned.z-pos.z)/fallT;
     }
-    this.bombs.push({ mesh, vel:bombVel, impact:planned ? planned.clone() : null, index, age:0 });
+    this.bombs.push({ mesh, vel:bombVel, impact:planned ? planned.clone() : null, index, age:0, kind });
     if(this.markers[index]) this.markers[index].released = true;
     if(this.bombs.length === 1)
       this.cb.toast?.('Something is coming down. Get out from under it.', 'bad');
   }
 
-  update(dt, target, ship, playerPos){
+  update(dt, target, ship, playerPos, wind){
     this.blast.update(dt, playerPos);
+    this.updateHazards(dt, playerPos, wind);
     this.flash = this.blast.flash;
     this.updateMarkers(dt);
 
@@ -151,6 +160,17 @@ export class Strikes {
         this.launch(target, ship);
       }
     }
+  }
+
+  /* Hazards age in place — HazardFX keys its state off object identity. */
+  updateHazards(dt, playerPos, wind){
+    for(let i = this.hazards.length-1; i >= 0; i--){
+      const h = this.hazards[i];
+      h.age += dt;
+      if(h.age >= h.ttl) this.hazards.splice(i, 1);
+    }
+    if(wind) this._wind.set(wind.x, 0, wind.z);
+    this.hazardFX.update(dt, this.hazards, playerPos, this._wind);
   }
 
   updateMarkers(dt){
@@ -182,8 +202,14 @@ export class Strikes {
         b.mesh.quaternion.setFromUnitVectors(FORWARD, this._dir);
       }
 
+      const spec = munition(b.kind);
       const seaY = this.field.height(b.mesh.position.x, b.mesh.position.z);
-      if(b.mesh.position.y > seaY) continue;
+      // an air-bursting canister opens well above the water
+      const trigger = spec.fuze === 'airburst' ? seaY + (spec.burstAlt || 55) : seaY;
+      if(b.mesh.position.y > trigger){
+        if(spec.fuze !== 'airburst') continue;
+        continue;
+      }
 
       // Resolve the crossing inside this frame, then reconcile X/Z to the
       // advertised marker so the warning remains an honest gameplay contract.
@@ -196,7 +222,7 @@ export class Strikes {
         THREE.MathUtils.lerp(z0, b.mesh.position.z, hitU));
       if(b.impact){ this._impact.x = b.impact.x; this._impact.z = b.impact.z; }
       this._impact.y = this.field.height(this._impact.x, this._impact.z);
-      this.detonate(this._impact, ship, playerPos);
+      this.detonate(this._impact, ship, playerPos, b.kind);
       const marker = this.markers[b.index];
       if(marker){ marker.live = false; marker.mesh.visible = false; }
       this.scene.remove(b.mesh);
@@ -204,10 +230,30 @@ export class Strikes {
     }
   }
 
-  detonate(point, ship, playerPos){
-    this.blast.water(point, 1);
+  detonate(point, ship, playerPos, kind = 'mk83'){
+    const spec = munition(kind);
+    const power = spec.blast?.power ?? 1;
+    this.blast.water(point, power);
+
+    // The two special families leave something behind that matters more
+    // than the bang did.
+    if(spec.family === 'incendiary' && spec.spread){
+      const n = 4;
+      for(let i = 0; i < n; i++){
+        const t = (i/(n-1) - 0.5)*spec.spread.length;
+        this.hazards.push({ type:'fire',
+          point:{ x:point.x + this._dir.x*t, y:point.y, z:point.z + this._dir.z*t },
+          radius: spec.spread.width*0.5, age:0, ttl: spec.burn?.duration ?? 78, intensity:1 });
+      }
+      this.cb.toast?.('The water is burning. Do not sail into it.', 'bad');
+    } else if(spec.family === 'chemical' && spec.cloud){
+      this.hazards.push({ type:'cloud', point:{ x:point.x, y:point.y, z:point.z },
+        radius: spec.cloud.radius, age:0, ttl: spec.cloud.duration ?? 135, intensity:1 });
+      this.cb.toast?.('Something is spreading on the wind. Get upwind of it.', 'bad');
+    }
+
     const d = playerPos ? playerPos.distanceTo(point) : 999;
-    this.audio.explosion(THREE.MathUtils.clamp(1-d/700, 0.05, 1), d/340);
+    this.audio.explosion(THREE.MathUtils.clamp(1-d/700, 0.05, 1)*power, d/340);
 
     if(ship){
       const force = Blast.impulseAt(point, ship.pos);
