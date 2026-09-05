@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { stream } from './rng.js';
 
 /* Yellow-legged gulls: boids that loiter over islands, then peel off to
    follow whichever boat looks most like it is hauling nets. */
@@ -27,6 +28,7 @@ function wingGeometry(){
 
 export class Gulls {
   constructor(scene, field, opts = {}){
+    const gr = stream('gulls');
     this.field = field;
     this.count = opts.count || 70;
     this.birds = [];
@@ -57,14 +59,14 @@ export class Gulls {
       wl.add(mwl); wr.add(mwr);
       wl.position.set(0.10, 0.05, 0.05); wr.position.set(-0.10, 0.05, 0.05);
       g.add(wl, wr);
-      const s = 0.85 + Math.random()*0.5;
+      const s = 0.85 + gr.next()*0.5;
       g.scale.setScalar(s);
       this.group.add(g);
       this.birds.push({
         obj:g, wl, wr,
-        pos:new THREE.Vector3(), vel:new THREE.Vector3((Math.random()-0.5)*8, 0, (Math.random()-0.5)*8),
-        phase:Math.random()*10, flap:0.5+Math.random()*0.6, glide:Math.random(),
-        target:new THREE.Vector3(), mode:'roam', timer:Math.random()*8, call:Math.random()*20,
+        pos:new THREE.Vector3(), vel:new THREE.Vector3((gr.next()-0.5)*8, 0, (gr.next()-0.5)*8),
+        phase:gr.next()*10, flap:0.5+gr.next()*0.6, glide:gr.next(),
+        target:new THREE.Vector3(), mode:'roam', timer:gr.next()*8, call:gr.next()*20,
       });
     }
     this._a = new THREE.Vector3(); this._b = new THREE.Vector3(); this._c = new THREE.Vector3();
@@ -72,22 +74,24 @@ export class Gulls {
   }
 
   reseed(center, world, boats){
+    const gr = stream('gulls');
     for(const b of this.birds){
-      const a = Math.random()*Math.PI*2, r = 40 + Math.random()*600;
-      b.pos.set(center.x + Math.cos(a)*r, 14 + Math.random()*45, center.z + Math.sin(a)*r);
+      const a = gr.next()*Math.PI*2, r = 40 + gr.next()*600;
+      b.pos.set(center.x + Math.cos(a)*r, 14 + gr.next()*45, center.z + Math.sin(a)*r);
       b.obj.position.copy(b.pos);
       b.target.copy(b.pos);
     }
   }
 
   update(dt, center, world, boats, night){
+    const gr = stream('gulls');
     const B = this.birds;
     // recycle anything that has fallen behind
     for(const b of B){
       if(b.pos.distanceToSquared(center) > 1400*1400){
-        const a = Math.random()*Math.PI*2, r = 300 + Math.random()*500;
-        b.pos.set(center.x+Math.cos(a)*r, 18+Math.random()*40, center.z+Math.sin(a)*r);
-        b.vel.set((Math.random()-0.5)*8, 0, (Math.random()-0.5)*8);
+        const a = gr.next()*Math.PI*2, r = 300 + gr.next()*500;
+        b.pos.set(center.x+Math.cos(a)*r, 18+gr.next()*40, center.z+Math.sin(a)*r);
+        b.vel.set((gr.next()-0.5)*8, 0, (gr.next()-0.5)*8);
       }
     }
 
@@ -95,24 +99,24 @@ export class Gulls {
       const b = B[i];
       b.timer -= dt;
       if(b.timer <= 0){
-        b.timer = 4 + Math.random()*10;
+        b.timer = 4 + gr.next()*10;
         // pick something worth circling: a boat if one is close, else an island, else the sea
         let best = null, bd = 1e9;
         for(const s of boats){
           const d = s.pos.distanceToSquared(b.pos);
           if(d < bd && d < 900*900){ bd = d; best = s.pos; }
         }
-        if(best && Math.random() < 0.72){
+        if(best && gr.next() < 0.72){
           b.mode = 'follow';
           b.target.copy(best);
         } else {
           const near = world && world.nearest(b.pos.x, b.pos.z);
-          if(near && near.island && near.dist < 900 && Math.random() < 0.6){
+          if(near && near.island && near.dist < 900 && gr.next() < 0.6){
             b.mode = 'roost';
             b.target.copy(near.island.pos);
           } else {
             b.mode = 'roam';
-            const a = Math.random()*Math.PI*2, r = 150 + Math.random()*500;
+            const a = gr.next()*Math.PI*2, r = 150 + gr.next()*500;
             b.target.set(center.x+Math.cos(a)*r, 0, center.z+Math.sin(a)*r);
           }
         }
@@ -151,13 +155,30 @@ export class Gulls {
       }
 
       b.vel.addScaledVector(steer, dt);
-      // gulls are fast but not supersonic
-      const sp = b.vel.length();
+      // Damp the vertical channel harder than the horizontal: a gull corrects
+      // its height continuously, and without this the altitude spring
+      // overshoots and drives it straight into the sea.
+      b.vel.y -= b.vel.y*Math.min(1, dt*2.2);
+
+      // Speed limits apply to the horizontal component only. Scaling the whole
+      // velocity to enforce a minimum airspeed also scales any descent, which
+      // is precisely how a bird ends up flying itself into the water.
+      const hx = b.vel.x, hz = b.vel.z;
+      let hs = Math.hypot(hx, hz);
       const maxS = b.mode === 'follow' ? 15 : 19;
-      if(sp > maxS) b.vel.multiplyScalar(maxS/sp);
-      if(sp < 5.5) b.vel.multiplyScalar(5.5/Math.max(sp,0.01));
-      b.vel.multiplyScalar(1 - dt*0.55);
+      if(hs > maxS){ const k = maxS/hs; b.vel.x *= k; b.vel.z *= k; hs = maxS; }
+      if(hs < 5.5){ const k = 5.5/Math.max(hs, 0.01); b.vel.x *= k; b.vel.z *= k; }
+      b.vel.y = THREE.MathUtils.clamp(b.vel.y, -6, 8);
+
+      b.vel.x *= 1 - dt*0.55; b.vel.z *= 1 - dt*0.55;
       b.pos.addScaledVector(b.vel, dt);
+
+      // A hard floor, because no amount of steering should let one swim.
+      const floorY = Math.max(seaY, world ? world.heightAt(b.pos.x, b.pos.z) : -1e9) + 2.5;
+      if(b.pos.y < floorY){
+        b.pos.y = floorY;
+        if(b.vel.y < 0) b.vel.y = Math.max(0, -b.vel.y*0.35);
+      }
 
       // orientation: face the flight path and bank into the turn
       b.obj.position.copy(b.pos);
@@ -180,7 +201,7 @@ export class Gulls {
       // the occasional call
       b.call -= dt;
       if(b.call <= 0){
-        b.call = 8 + Math.random()*35;
+        b.call = 8 + gr.next()*35;
         const d = b.pos.distanceTo(center);
         if(d < 190 && this.onCall && !night) this.onCall(THREE.MathUtils.clamp(1 - d/190, 0, 1));
       }

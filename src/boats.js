@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { makeBarrel } from './islands.js';
+import { stream } from './rng.js';
 
 /* ────────────────────────────────────────────────────────────────
    A caique. The hull is generated station by station, then floated
@@ -661,19 +662,22 @@ export class Fleet {
   }
 
   spawn(around){
-    const a = Math.random()*Math.PI*2;
-    const r = this.radius*(0.55 + Math.random()*0.45);
-    const pal = PALETTES[Math.floor(Math.random()*PALETTES.length)];
-    const scale = 0.7 + Math.random()*0.7;
+    // Seeded: every client must raise the same fleet, in the same places,
+    // or the sailor is not hidden among the same boats the pilot sees.
+    const rng = stream('fleet');
+    const a = rng.next()*Math.PI*2;
+    const r = this.radius*(0.55 + rng.next()*0.45);
+    const pal = rng.pick(PALETTES);
+    const scale = 0.7 + rng.next()*0.7;
     const s = new Ship(this.scene, this.field, Object.assign({
       x: around.x + Math.cos(a)*r, z: around.z + Math.sin(a)*r,
       length: 10*scale + 3, beam: 3.4*scale + 0.6, draft: 1.1*scale + 0.2,
-      mass: 3600*scale*scale, heading: Math.random()*Math.PI*2,
+      mass: 3600*scale*scale, heading: rng.next()*Math.PI*2,
       probesLong: 6, probesLat: 3,
     }, pal));
-    s.sailFull = 0.55 + Math.random()*0.45;   // what she'd carry in a soft breeze
+    s.sailFull = 0.55 + rng.next()*0.45;   // what she'd carry in a soft breeze
     s.sail = s.sailFull;
-    s.goal = new THREE.Vector3(around.x + (Math.random()-0.5)*3000, 0, around.z + (Math.random()-0.5)*3000);
+    s.goal = new THREE.Vector3(around.x + rng.spread(1500), 0, around.z + rng.spread(1500));
     this.boats.push(s);
     return s;
   }
@@ -702,8 +706,9 @@ export class Fleet {
       let err = want - b.headingAngle;
       err = Math.atan2(Math.sin(err), Math.cos(err));
       b.rudder = THREE.MathUtils.clamp(-err*1.6, -1, 1);
-      if(Math.hypot(b.goal.x-b.pos.x, b.goal.z-b.pos.z) < 120 || Math.random() < dt*0.02){
-        b.goal.set(around.x + (Math.random()-0.5)*3200, 0, around.z + (Math.random()-0.5)*3200);
+      const grng = stream('fleet');
+      if(Math.hypot(b.goal.x-b.pos.x, b.goal.z-b.pos.z) < 120 || grng.chance(dt*0.02)){
+        b.goal.set(around.x + grng.spread(1600), 0, around.z + grng.spread(1600));
       }
       b.sail = Math.min(b.sailFull ?? b.sail, carry);
       b.update(dt, wind, camPos);

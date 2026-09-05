@@ -13,6 +13,7 @@ import { Chart } from './chart.js';
 import { Cardio } from './physiology.js';
 import { Weather } from './weather.js';
 import { Atmosphere } from './atmosphere.js';
+import { reseedWorld, worldSeed, stream } from './rng.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -59,6 +60,12 @@ const SEA_COLOURS = {
 const canvas = document.getElementById('view');
 const ui = new UI();
 const audio = new Audio();
+// ?mute=1 keeps the page silent for unattended/automated runs
+if(new URLSearchParams(location.search).has('mute')){
+  audio.enabled = false;
+  const box = document.getElementById('opt-audio');
+  if(box) box.checked = false;
+}
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference:'high-performance', stencil:false });
 renderer.setPixelRatio(1);
@@ -95,7 +102,7 @@ let quest = null, survival = null, mode = MODES.easy, strikes = null;
 let state = 'loading';           // loading | menu | play | pause | over
 let hour = 16.6, storm = 0, wind = new THREE.Vector3(1,0,0.4), windSpeed = 6;
 let sunInfo = { night:0, elevation:0.5, flash:0 };
-let menuT = 0, elapsed = 0;
+let menuT = 0, elapsed = 0, runSeed = 0;
 
 /* ── quality governor ───────────────────────────────────────── */
 const gov = { q:10, acc:0, frames:0, fps:60, cooldown:1.5, manual:false };
@@ -323,6 +330,10 @@ function startMode(key){
   fleet.max = mode.boats;
 
   if(playerShip){ scene.remove(playerShip.group); scene.remove(playerShip.spray); playerShip = null; }
+
+  // One number defines the entire run: fleet, gulls, jars, sorties.
+  runSeed = (Date.now() ^ (Math.random()*0xffffffff)) >>> 0;
+  reseedWorld(runSeed);
 
   quest = new Quest(mode, world);
   discovered.clear();
@@ -606,7 +617,7 @@ function findInteraction(){
     if(mode.survival && forageCool <= 0 && world.heightAt(p.x,p.z) > 2.0)
       return { label:'forage', act:() => {
         forageCool = 12;
-        const luck = Math.random();
+        const luck = stream('forage').next();
         if(luck < 0.42){ survival.refill('food', 2); ui.toast('Figs, mostly green. Better than nothing.'); }
         else if(luck < 0.68){ survival.refill('citrus', 1); ui.toast('A lemon tree, half wild. You strip what you can reach.'); }
         else ui.toast('Thorn scrub and dust. Nothing here.', 'dim');
@@ -875,4 +886,5 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
   get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;}, cardio,
   get weather(){return weather;}, get atmos(){return atmos;},
+  get runSeed(){return runSeed;}, reseedWorld, worldSeed,
   get hour(){return hour;}, set hour(v){hour = v;} };

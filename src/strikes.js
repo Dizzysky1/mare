@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Flyover } from './fx/flyover.js';
 import { buildBomb, setFins } from './fx/ordnance.js';
 import { Blast } from './fx/blast.js';
+import { stream } from './rng.js';
 
 /* Contested waters. Flight, stores and blast visuals live in focused
    modules; this is the gameplay seam that schedules runs, integrates
@@ -74,8 +75,9 @@ export class Strikes {
 
   launch(target, ship){
     this.wave++;
-    const count = Math.min(5, 1 + Math.floor(this.wave/2) + (Math.random() < 0.4 ? 1 : 0));
-    const heading = Math.random()*Math.PI*2;
+    const rng = stream('strikes');
+    const count = Math.min(5, 1 + Math.floor(this.wave/2) + (rng.chance(0.4) ? 1 : 0));
+    const heading = rng.next()*Math.PI*2;
 
     // Lead modestly. The long visible run-in is warning, not a perfect
     // prediction of a manoeuvring boat, so moving promptly still matters.
@@ -87,10 +89,10 @@ export class Strikes {
     this.flyover.start({
       target:this._aim,
       count,
-      spacing:42 + Math.random()*18,
+      spacing:42 + rng.next()*18,
       heading,
-      altitude:520 + Math.random()*130,
-      speed:235 + Math.random()*35,
+      altitude:520 + rng.next()*130,
+      speed:235 + rng.next()*35,
     });
 
     for(let i = 0; i < this.markers.length; i++){
@@ -145,7 +147,7 @@ export class Strikes {
     if(!this.flyover.active && this.bombs.length === 0){
       this.timer -= dt;
       if(this.timer <= 0){
-        this.timer = this.interval*(0.65 + Math.random()*0.7)/(1 + this.wave*0.05);
+        this.timer = this.interval*(0.65 + stream('strikes').next()*0.7)/(1 + this.wave*0.05);
         this.launch(target, ship);
       }
     }

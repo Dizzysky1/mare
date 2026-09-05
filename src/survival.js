@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { stream } from './rng.js';
 
 /* Bodies, and what the sea does to them. Rates are per second and were
    tuned so a careless passage kills you in roughly twenty minutes. */
@@ -155,7 +156,7 @@ export class Quest {
   }
 
   /* scatter jars over the non-goal islands. Positions are re-rolled every
-     run (Math.random(), not the world's seeded rng), so a height check
+     run (stream('quest').next(), not the world's seeded rng), so a height check
      alone is not enough — the same roll that clears the height band can
      still land on a cliff face steeper than the player can stand on
      (player.js pushes you back down slopes where normal.y < 0.62). Require
@@ -165,11 +166,11 @@ export class Quest {
     const pool = this.world.islands.filter(i => !i.hasLight);
     const CLIMBABLE = 0.70;
     for(const isl of pool){
-      const n = 1 + (Math.random() < 0.4 ? 1 : 0);
+      const n = 1 + (stream('quest').next() < 0.4 ? 1 : 0);
       for(let j = 0; j < n; j++){
         let x, z, h, ok = false, tries = 0;
         do {
-          const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*isl.radius*0.9;
+          const a = stream('quest').next()*Math.PI*2, r = Math.sqrt(stream('quest').next())*isl.radius*0.9;
           x = isl.pos.x + Math.cos(a)*r; z = isl.pos.z + Math.sin(a)*r;
           h = isl.height(x,z);
           ok = h >= 1.0 && h <= isl.peak*0.75 && isl.normalAt(x,z,0.9).y >= CLIMBABLE;
@@ -177,7 +178,7 @@ export class Quest {
         if(!ok) continue;
         const m = makeAmphora();
         m.position.set(x, h + 0.05, z);
-        m.rotation.set((Math.random()-0.5)*0.4, Math.random()*6, (Math.random()-0.5)*0.4);
+        m.rotation.set((stream('quest').next()-0.5)*0.4, stream('quest').next()*6, (stream('quest').next()-0.5)*0.4);
         scene.add(m);
         this.amphorae.push({ mesh:m, taken:false, pos:m.position.clone(), island:isl });
       }
@@ -188,10 +189,10 @@ export class Quest {
     // spot found on any remaining island rather than leave the run unwinnable.
     let guard = 0;
     while(this.amphorae.length < count && guard++ < 40){
-      const isl = pool[Math.floor(Math.random()*pool.length)];
+      const isl = pool[Math.floor(stream('quest').next()*pool.length)];
       let best = null, bestNy = -1;
       for(let i = 0; i < 40; i++){
-        const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*isl.radius*0.9;
+        const a = stream('quest').next()*Math.PI*2, r = Math.sqrt(stream('quest').next())*isl.radius*0.9;
         const x = isl.pos.x + Math.cos(a)*r, z = isl.pos.z + Math.sin(a)*r;
         const h = isl.height(x,z);
         if(h < 1.0 || h > isl.peak*0.9) continue;
@@ -201,7 +202,7 @@ export class Quest {
       if(!best || bestNy < CLIMBABLE) continue;
       const m = makeAmphora();
       m.position.set(best.x, best.h + 0.05, best.z);
-      m.rotation.set((Math.random()-0.5)*0.4, Math.random()*6, (Math.random()-0.5)*0.4);
+      m.rotation.set((stream('quest').next()-0.5)*0.4, stream('quest').next()*6, (stream('quest').next()-0.5)*0.4);
       scene.add(m);
       this.amphorae.push({ mesh:m, taken:false, pos:m.position.clone(), island:isl });
     }
