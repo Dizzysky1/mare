@@ -73,6 +73,56 @@ export class Strikes {
       this.markers.push({ mesh, impact:null, live:false, released:false, t:0 });
     }
 
+    /* ── the reason you can see it coming ──────────────────────
+       A store is released about 2.7 km out (that is not a choice — it
+       falls for ten seconds from 550 m at 250 m/s, so the geometry puts
+       it there) and it is three metres long. At that range it subtends
+       about a sixteenth of a degree: three pixels, dark grey, against a
+       dark storm sky. You cannot see it, and players reported exactly
+       that. The store is not the thing the eye can catch at that range —
+       its wake is. A fast store drags a thin turbulent wake of
+       condensation behind it through humid marine air, and that is both
+       real and, at a couple of hundred metres long, actually visible.
+       One pooled draw call for every store in the air. */
+    this.TRAIL_PTS = 26;
+    const trailN = this.markers.length*this.TRAIL_PTS;
+    const tg = new THREE.BufferGeometry();
+    this._trailPos = new Float32Array(trailN*3);
+    this._trailAge = new Float32Array(trailN);
+    tg.setAttribute('position', new THREE.BufferAttribute(this._trailPos, 3));
+    tg.setAttribute('aAge', new THREE.BufferAttribute(this._trailAge, 1));
+    this.trailGeo = tg;
+    this.trailMat = new THREE.ShaderMaterial({
+      transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+      uniforms:{ uSize:{ value: 26.0 } },
+      vertexShader:`
+        attribute float aAge;
+        varying float vA;
+        uniform float uSize;
+        void main(){
+          vA = aAge;
+          vec4 mv = modelViewMatrix*vec4(position,1.0);
+          // hold a floor on screen size: the wake has to stay legible at
+          // two or three kilometres, which is the entire point of it
+          gl_PointSize = max(2.0, uSize*(0.35+0.65*aAge)*(300.0/max(60.0,-mv.z)));
+          gl_Position = projectionMatrix*mv;
+        }`,
+      fragmentShader:`
+        varying float vA;
+        void main(){
+          vec2 d = gl_PointCoord-0.5;
+          float r = dot(d,d);
+          if(r > 0.25) discard;
+          float soft = smoothstep(0.25,0.0,r);
+          gl_FragColor = vec4(vec3(0.86,0.89,0.94), soft*vA*0.5);
+        }`,
+    });
+    this.trails = new THREE.Points(tg, this.trailMat);
+    this.trails.frustumCulled = false;
+    this.trails.renderOrder = 4;
+    scene.add(this.trails);
+    this._trailCursor = new Int32Array(this.markers.length);
+
     this._dir = new THREE.Vector3();
     this._aim = new THREE.Vector3();
     this._impact = new THREE.Vector3();
@@ -89,6 +139,7 @@ export class Strikes {
     this.releaseKinds.length = 0;
     this.hazards.length = 0;
     this.effects.reset();
+    if(this._trailAge){ this._trailAge.fill(0); this._trailCursor.fill(0); }
     for(const m of this.markers){
       m.live = false; m.released = false; m.impact = null;
       m.mesh.visible = false;
@@ -119,8 +170,12 @@ export class Strikes {
       count,
       spacing:42 + rng.next()*18,
       heading,
-      altitude:520 + rng.next()*130,
-      speed:235 + rng.next()*35,
+      // A lower, slower run-in. The release range is fixed by the fall
+      // time, so bringing the aircraft down from 550 m to ~400 m pulls the
+      // release in from 2.7 km to about 2.0 km and puts the aircraft
+      // itself within range of being seen and heard properly.
+      altitude:355 + rng.next()*115,
+      speed:205 + rng.next()*30,
     });
 
     for(let i = 0; i < this.markers.length; i++){
@@ -156,7 +211,8 @@ export class Strikes {
       bombVel.x = (planned.x-pos.x)/fallT;
       bombVel.z = (planned.z-pos.z)/fallT;
     }
-    this.bombs.push({ mesh, vel:bombVel, impact:planned ? planned.clone() : null, index, age:0, kind });
+    this.bombs.push({ mesh, vel:bombVel, impact:planned ? planned.clone() : null,
+                      index, age:0, kind, slot:this._takeSlot() });
     if(this.markers[index]) this.markers[index].released = true;
     if(this.bombs.length === 1)
       this.cb.toast?.('Something is coming down. Get out from under it.', 'bad');
@@ -174,7 +230,7 @@ export class Strikes {
     this.scene.add(mesh);
     this.bombs.push({
       mesh, vel: new THREE.Vector3(vel.x, vel.y, vel.z),
-      impact: null, index: -1, age: 0, kind,
+      impact: null, index: -1, age: 0, kind, slot: this._takeSlot(),
     });
     return true;
   }
@@ -196,6 +252,7 @@ export class Strikes {
 
     // Residual effects finish while disarmed; arm() clears any live stores.
     this.updateBombs(dt, ship, playerPos);
+    this.updateTrails(dt);
     if(!this.active) return;
 
     this.flyover.update(dt, playerPos);
@@ -236,6 +293,36 @@ export class Strikes {
       m.mesh.material.opacity = (m.released ? 0.62 : 0.28)*(0.45 + pulse*0.55);
       m.mesh.scale.setScalar(m.released ? 0.82 + pulse*0.18 : 1);
     }
+  }
+
+  /* One wake slot per store in the air. Slots are reused, so the buffer
+     never grows and nothing is allocated once the game is running. */
+  _takeSlot(){
+    const used = new Set(this.bombs.map(b => b.slot));
+    for(let i = 0; i < this.markers.length; i++) if(!used.has(i)) return i;
+    return 0;
+  }
+
+  /* Lay down one wake sample per store per frame and age the rest out.
+     Written straight into the pooled attribute arrays; no allocation. */
+  updateTrails(dt){
+    const N = this.TRAIL_PTS, age = this._trailAge, pos = this._trailPos;
+    for(let i = 0; i < age.length; i++){
+      if(age[i] > 0) age[i] = Math.max(0, age[i] - dt*0.55);
+    }
+    for(const b of this.bombs){
+      if(b.slot == null) continue;
+      // Condensation needs a moment to form behind the store, so a store
+      // just off the pylon has no wake yet.
+      if(b.age < 0.25) continue;
+      const c = this._trailCursor[b.slot] % N;
+      const o = (b.slot*N + c)*3;
+      pos[o] = b.mesh.position.x; pos[o+1] = b.mesh.position.y; pos[o+2] = b.mesh.position.z;
+      age[b.slot*N + c] = 1;
+      this._trailCursor[b.slot] = (c + 1) % N;
+    }
+    this.trailGeo.attributes.position.needsUpdate = true;
+    this.trailGeo.attributes.aAge.needsUpdate = true;
   }
 
   updateBombs(dt, ship, playerPos){
@@ -338,5 +425,7 @@ export class Strikes {
     this.blast.dispose();
     for(const m of this.markers){ this.scene.remove(m.mesh); m.mesh.material.dispose(); }
     this.markerGeo.dispose();
+    this.scene.remove(this.trails);
+    this.trailGeo.dispose(); this.trailMat.dispose();
   }
 }

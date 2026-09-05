@@ -84,24 +84,72 @@ const CM_ALPHA = 0.85;   // positive: nose-up alpha -> nose-down moment (restori
 const CM0 = -0.033;
 const CM_Q = -14;        // pitch-rate damping
 const CM_DE = -0.40;     // elevator: +pitch input -> nose up
-const CL_BETA = -0.10;   // dihedral effect: restoring roll from sideslip
-const CL_P = -0.4;       // roll-rate damping
-const CL_DA = -0.07;     // aileron: +roll input -> right wing down
+// Dihedral effect: restoring roll from sideslip. POSITIVE in these axes, and
+// that sign is the whole ballgame. beta = asin(vBody.x/V) is positive when the
+// jet is moving toward its own right wing, i.e. the relative wind is on the
+// right; the wing it blows against should rise, and "right wing up" is a
+// positive rotation about +Z here. Textbook tables quote Cl_beta negative
+// because they use the standard axes where positive roll is right wing DOWN —
+// copying that sign into this convention inverts the term into ANTI-dihedral.
+// It was negative here, and the consequences were measured: full right rudder
+// rolled the jet 12 deg LEFT in the first second (it now rolls 7.5 deg right),
+// the dutch roll ran at damping ratio -0.013 (divergent), and every banked turn
+// fed sideslip back as roll INTO the turn, which is the spiral divergence
+// CL_PHI below was invented to paper over. With the sign corrected, right
+// rudder rolls right, dutch roll damps at +0.157, and the bank->turn->sideslip
+// ->dihedral loop closes on its own. Magnitude is deliberately modest: at 0.06
+// a 14 m/s crosswind step upsets the jet by 4 deg of bank, where 0.20 gives 13.
+const CL_BETA = 0.06;
+// Roll-rate damping, doubled from -0.4, and CL_DA scaled with it so the peak
+// roll rate is unchanged. The equivalent-box inertia above puts Iroll at
+// ~140,000 kg m^2 for an airframe whose real-world counterpart is nearer
+// 31,000, and an inflated inertia shows up as a mushy roll: the roll-mode time
+// constant was 1.56 s, well outside the ~0.5 s a fighter feels like, so full
+// aileron took a second to build and another second to stop. -0.8 pulls that
+// to 0.57 s. Because the spiral's quasi-static roll rate goes as CL_BETA/CL_P,
+// doubling this alone would have halved the spiral convergence rate; CL_BETA
+// is set against the pair, not against CL_P's old value.
+const CL_P = -0.8;
+// Aileron power, scaled with CL_P (0.12/0.8 = 0.07/0.4 x 0.857) so steady-state
+// roll rate lands at 306 deg/s at 220 m/s — the ~300 deg/s this file was
+// calibrated toward — rather than the 352 deg/s the old pair actually gave.
+const CL_DA = -0.12;     // aileron: +roll input -> right wing down
 const CN_BETA = 0.10;    // weathervane: restoring yaw from sideslip
-const CN_R = -0.18;      // yaw-rate damping
+// Yaw-rate damping. Raised from -0.18 for the same reason CL_P was: the box
+// inertia makes Iyaw ~400,000 kg m^2, so the nondimensional coefficient has to
+// carry more to produce the same physical damping. At -0.18 the dutch roll
+// took 4.2 s per cycle and barely damped at all (zeta 0.07 once CL_BETA's sign
+// was fixed, and outright divergent at -0.013 before it); -0.55 gives
+// zeta = 0.157, which settles a gust-induced wallow in two or three cycles
+// instead of leaving it ringing. It also feeds the spiral loop: more yaw
+// damping means the nose is held further outside a turn, which is what
+// generates the sideslip CL_BETA then works on.
+const CN_R = -0.55;
 
-/* Spiral stability. The bank -> turn -> sideslip -> dihedral loop that
-   levels a real aeroplane never closes here, because the yaw damping
-   drives beta to almost zero before the dihedral term can act on it.
-   What is left is a residual roll moment with nothing opposing bank
-   angle itself, so bank integrates without limit: measured, the jet
-   rolled to 62 degrees and flew into the sea in 120 s with the stick
-   centred in a 12 m/s wind. This term stands in for that missing loop.
-   Real fighters are usually mildly spirally UNSTABLE, but a pilot who
-   has to spend minutes searching the sea needs to be able to look away
-   from the instruments, so this is deliberately biased to gentle
-   stability rather than realism. */
-const CL_PHI = -0.032;
+/* Spiral stability, as a direct roll moment against bank angle. This is not
+   a real aerodynamic derivative — no surface makes a moment because of how
+   the horizon sits — so it exists purely as the gameplay bias the comment
+   above CL_BETA describes: a pilot spending minutes searching the sea needs
+   to be able to look away from the instruments, and real fighters are mildly
+   spirally UNSTABLE.
+
+   It used to be -0.032, sized to stop a divergence that turns out to have
+   been CL_BETA's inverted sign rather than a missing loop. At that strength
+   it is not a gentle bias at all, it is a spring: bank angle against roll
+   damping is a second-order system, and -0.032 puts its undamped frequency
+   at 1.60 rad/s against 0.89 1/s of damping, i.e. damping ratio 0.28. A
+   40 percent overshoot and a 4 s ringing period is why a sustained turn
+   needed a permanently held aileron — 0.23 of full deflection bought only 31
+   of the 45 degrees of bank asked for — and why releasing it snapped the
+   wings back through level in about 5 s.
+
+   -0.0002 is sized as a floor, not a spring: on its own its time constant is
+   ~120 s at 220 m/s, far slower than the ~60 s the corrected dihedral loop
+   now delivers, so it only has a say if that loop is ever weakened (a future
+   turn coordinator zeroing beta would do it). Together they take 45 degrees
+   of bank to 40 after 5 s and 32 after 15 s — held, near enough, and washing
+   out slowly rather than snapping back. */
+const CL_PHI = -0.0002;
 const CN_DR = 0.035;     // rudder: +yaw input -> nose right
 // Stalled-and-rolling is how a departure turns into an autorotating spin:
 // pitch stability fades near the stall break (the real CP-shift/LERX-burst
@@ -351,9 +399,16 @@ export class Aircraft {
 
     const cmAlphaEff = CM_ALPHA * (1 - STALL_CM_FADE * stallProgress);
     const Cpitch = CM0 + cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
-    // sin(bank) from the body right-axis' vertical component
-    this._right.set(1,0,0).applyQuaternion(this.quat);
-    const sinBank = clamp(this._right.y, -1, 1);
+    // sin(bank), measured unambiguously. The body right-axis' vertical
+    // component alone is sin(bank)*cos(pitch), not sin(bank): it collapses to
+    // zero in a vertical climb whatever the bank is, and read back through
+    // asin() it cannot tell 70 degrees of bank from 110. Normalising against
+    // the body up-axis' vertical component is the sin of atan2(right.y, up.y),
+    // which is the true bank angle in all four quadrants and independent of
+    // pitch attitude. (_right and _up are already resolved above this frame.)
+    const ry = this._right.y, uy = this._up.y;
+    const bankNorm = Math.hypot(ry, uy);
+    const sinBank = bankNorm > 1e-6 ? ry / bankNorm : 0;
     const Croll = CL_BETA * beta + CL_P * phat + CL_DA * rollCtrl + CL_PHI * sinBank;
     const Cyaw = CN_BETA * beta + CN_R * rhat + CN_DR * yawCtrl + STALL_YAW_COUPLE * stallProgress * phat;
 
