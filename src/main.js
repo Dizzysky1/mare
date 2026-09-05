@@ -248,14 +248,17 @@ async function boot(){
       survival.health = Math.max(0, survival.health - amount);
       survival.hurtT = 1.0;
       survival.sanity = Math.max(0, survival.sanity - amount*0.25);
-      if(survival.health <= 0){ survival.dead = true; survival.cause = why; }
+      // Against an epsilon, not zero: damage that exactly consumes the
+      // bar leaves a float residue of ~1e-14, which left the player
+      // standing on nothing after a lethal dose of fire.
+      if(survival.health <= 1e-6){ survival.health = 0; survival.dead = true; survival.cause = why; }
       else ui.toast(why, 'bad');
     },
     // A near miss is violent enough to take spectacles off a face — the
     // mechanism is being knocked about, not the pressure itself acting on
     // the lens, which is nowhere near strong enough to matter.
     blastWave: (impulseNs, dist) => {
-      if(!vision || !playing) return;
+      if(!vision || state !== 'play') return;
       if(vision.blast(impulseNs)) ui.toast('Your glasses are gone — off your face and over the side.', 'bad');
       if(dist < 120) vision.flash(THREE.MathUtils.clamp(1.6 - dist/120, 0, 1.4));
     },
