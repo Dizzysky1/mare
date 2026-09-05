@@ -43,6 +43,9 @@ const MODES = {
   },
 };
 
+/* How much sail a boat can carry in a given wind, as a fraction of full. */
+const reefedFor = (v) => THREE.MathUtils.clamp(45/Math.max(1, v*v), 0.18, 0.70);
+
 const SEA_COLOURS = {
   warm: { deep:[0.0040,0.031,0.062], mid:[0.014,0.170,0.250], shallow:[0.105,0.640,0.590], sss:[0.080,0.480,0.420] },
   cold: { deep:[0.0035,0.011,0.016], mid:[0.014,0.055,0.062], shallow:[0.055,0.150,0.140], sss:[0.030,0.110,0.105] },
@@ -320,7 +323,10 @@ function startMode(key){
       player:true, x:0, z:0, heading: mode.hostile ? 2.4 : 0.6,
       hullColor:0xf2efe6, stripe:0x1f6f9c, boot:0x8f3a2e,
     });
-    playerShip.sail = 0.6;
+    // Start under canvas you could actually carry. Heeling force goes as the
+    // square of wind speed, so the sail you can stand up under goes as its
+    // inverse — nobody sails into a gale with full working sail up.
+    playerShip.sail = reefedFor(windSpeed);
     player.boardShip(playerShip);
     if(quest.need || mode.key !== 'easy') quest.placeAmphorae(scene, makeAmphora, 3);
     ui.setObjective(quest.status(player.pos));

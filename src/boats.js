@@ -8,7 +8,28 @@ import { makeBarrel } from './islands.js';
    ──────────────────────────────────────────────────────────────── */
 
 const RHO = 1025;          // kg/m³, seawater
+const RHO_AIR = 1.225;     // kg/m³, air — drives the sail
 const G = 9.81;
+
+// Hull form-drag coefficients (quadratic, ½ρCdA·v|v|), standing in for a real
+// resistance curve: broadside is a bluff flat-plate-ish shape (and carries the
+// keel's job, since there's no separate keel model), fore-aft is slender and
+// slips through easily, and heave picks up extra so waves aren't fought by
+// added mass and righting stiffness alone.
+// A displacement hull's resistance is mostly wave-making, not form drag, so
+// the fore-and-aft coefficient is far lower than a bluff-body figure would
+// suggest — calibrated to put her at hull speed in a working breeze.
+const CD_LAT = 1.1, CD_FWD = 0.055, CD_HEAVE = 1.7;
+
+// Sail aerodynamics: a simple lift/drag polar. Lift peaks at AOA_OPT and has
+// mostly separated (stalled) flow past AOA_STALL; drag rises through both.
+const AOA_OPT = 0.34;      // ~20°, best angle of attack before the sail stalls
+const AOA_STALL = 0.68;    // ~39°, lift peaks here and starts falling off
+const CL_MAX = 1.35, CD0_SAIL = 0.05, CD_MAX_SAIL = 1.8;
+const BOOM_MAX = 1.35;     // ~77°, the shrouds stop the boom going further out
+
+// Rudder: a small lift-generating blade, not a paddle.
+const RUDDER_MAX = 0.61;   // ±35°, the physical stop on the tiller
 
 function hullHalfWidth(t, beam){           // t: -1 stern … +1 bow
   const a = Math.max(0, 1 - t*t);
@@ -93,9 +114,9 @@ export class Ship {
     this.rudder = 0;         // −1 … 1
     this.sail = 0.55;        // 0 furled … 1 full
     this.sailAngle = 0;      // radians from centreline
-    this.rigForce = opts.rigForce ?? 150;
-    this.rightingGM = opts.rightingGM ?? 0.45;
-    this.rollDamping = opts.rollDamping ?? 1.8;
+    this.rigForce = opts.rigForce ?? 1.15;   // rig efficiency/sail-plan multiplier, ~1 for one working sail
+    this.rightingGM = opts.rightingGM ?? 1.25;
+    this.rollDamping = opts.rollDamping ?? 5.2;
     this.heading = opts.heading || 0;
     this.quat.setFromAxisAngle(new THREE.Vector3(0,1,0), this.heading);
     // these are produced by step(); seed them so anything that steers on the
@@ -103,13 +124,27 @@ export class Ship {
     this.headingAngle = this.heading;
     this.fwdSpeed = 0; this.submersion = 0; this.driveAmount = 0;
 
-    // inertia of an equivalent box
+    // inertia of an equivalent box (x: pitch axis, y: yaw axis, z: roll axis)
     const L = this.length, B = this.beam, H = this.draft + this.free;
     this.I = new THREE.Vector3(
       this.mass/12*(H*H + L*L),
       this.mass/12*(B*B + L*L),
       this.mass/12*(B*B + H*H)
     );
+
+    // Added mass: an accelerating hull drags a comparable mass of water along
+    // with it. Sway and heave shove a lot of water aside/underneath (added
+    // mass close to the hull's own displacement); surge barely disturbs
+    // anything ahead of a slender bow. Strip-theory ballparks, not measured —
+    // but anisotropic added mass, even approximate, is what actually fixes a
+    // hull that used to snap upright or sideways far too sharply.
+    this.addedMass = new THREE.Vector3(this.mass*0.75, this.mass*0.85, this.mass*0.10);
+    this.addedI = new THREE.Vector3(this.I.x*0.55, this.I.y*0.08, this.I.z*0.30);
+
+    // Sail area from the same proportions build() cuts the sail mesh to — a
+    // triangular lateen is roughly half its bounding rectangle.
+    const mastH = this.length*0.95;
+    this.sailArea = 0.5*(this.length*0.60)*(mastH*0.62);
 
     this.group = new THREE.Group();
     this.build(opts);
@@ -129,6 +164,15 @@ export class Ship {
     }
     // total displaced volume shared across probes, tuned so she floats on her lines
     this.probeVol = (this.mass/RHO)*1.9/this.probes.length;
+    // per-probe share of the hull's profile area on each axis, for the
+    // quadratic form-drag term in step() — derived from hull dimensions
+    // rather than a flat fitted constant
+    const nP = this.probes.length;
+    this.dragArea = new THREE.Vector3(
+      (this.draft*this.length*0.7)/nP,   // x: broadside (keel-like) profile
+      (this.beam*this.length*0.7)/nP,    // y: waterplane-ish area resisting heave
+      (this.draft*this.beam*0.5)/nP      // z: bow/stern frontal area — slender
+    );
 
     this._v = new THREE.Vector3(); this._w = new THREE.Vector3();
     this._f = new THREE.Vector3(); this._lev = new THREE.Vector3();
@@ -356,6 +400,13 @@ export class Ship {
     invQ.copy(this.quat).invert();
     let submerged = 0;
 
+    // Wave-making resistance: a displacement hull digs into the trough of its
+    // own bow wave as it nears hull speed, and resistance climbs steeply.
+    // Without this she just keeps accelerating in a gale.
+    const vHull = 1.25*Math.sqrt(this.length);
+    const froude = Math.abs(this.fwdSpeed)/vHull;
+    const wave = 1 + 9*Math.pow(Math.max(0, froude - 0.78), 2);
+
     const rel = this._rel, wp = this._wp, f = this._f, pv = this._pv;
     for(const local of this.probes){
       rel.copy(local).applyQuaternion(this.quat);
@@ -375,8 +426,16 @@ export class Ship {
       pv.copy(this.angVel).cross(rel).add(this.vel);
       pv.x -= s.vx; pv.y -= s.vy; pv.z -= s.vz;
       f.copy(pv).applyQuaternion(invQ);
-      f.x *= 900; f.y *= 520; f.z *= 210;      // lateral resistance ≫ fore-aft
-      f.applyQuaternion(this.quat).multiplyScalar(-sub/this.probes.length*3.0);
+      // quadratic form drag per body axis, ½ρCdA·v|v| — lateral resistance is
+      // what actually lets her sail to windward (there's no separate keel);
+      // fore-aft slips easily; heave drag damps wave response directly
+      // instead of leaning on added mass and the righting term alone
+      f.set(
+        -0.5*RHO*CD_LAT  *this.dragArea.x*Math.abs(f.x)*f.x,
+        -0.5*RHO*CD_HEAVE*this.dragArea.y*Math.abs(f.y)*f.y,
+        -0.5*RHO*CD_FWD*wave*this.dragArea.z*Math.abs(f.z)*f.z
+      ).multiplyScalar(sub);
+      f.applyQuaternion(this.quat);
       this.applyForce(f, rel, acc);
     }
     this.submersion = submerged/this.probes.length;
@@ -385,33 +444,75 @@ export class Ship {
     const fwd = this._fwd.set(0,0,1).applyQuaternion(this.quat);
     const heading = Math.atan2(fwd.x, fwd.z);
     this.headingAngle = heading;
-    // angle between the direction the wind is blowing and the way the bow points:
-    // 0 = wind dead astern (running), ±π = sailing straight into it (in irons)
-    const windRel = Math.atan2(wind.x, wind.z) - heading;
-    const relN = Math.atan2(Math.sin(windRel), Math.cos(windRel));
-    const eff = Math.pow(Math.max(0, Math.cos(relN*0.5)), 1.4);
-    // the sail swings out on a run and sheets in on a reach
-    const target = THREE.MathUtils.clamp(Math.sin(relN)*1.15, -1.3, 1.3);
-    this.sailAngle += (target - this.sailAngle)*Math.min(1, dt*1.6);
-    const drive = eff * this.sail * wind.lengthSq();
-    this.driveAmount = drive;
-    this.pointOfSail = relN;
 
-    // The rig's force is normal to the sail, so a sheeted-out sail drives you
-    // forward and a sheeted-in one mostly just lays you over. Applying it at the
-    // centre of effort, well above the keel's side force, is what makes her heel.
+    // Apparent wind — what the sail actually feels — is true wind minus the
+    // boat's own velocity. This alone changes behaviour on every point of
+    // sail: beating to weather, the apparent wind swings forward and
+    // strengthens as she speeds up; running, it drops away behind her.
+    const aw = this._v.set(wind.x - this.vel.x, 0, wind.z - this.vel.z);
+    const awSpeed = aw.length();
+    // angle between the direction the apparent wind blows and the way the bow
+    // points: 0 = wind dead astern (running), ±π = sailing straight into it
+    const windRel = Math.atan2(aw.x, aw.z) - heading;
+    const relN = Math.atan2(Math.sin(windRel), Math.cos(windRel));
+    this.pointOfSail = relN;
+    // the bearing the wind is blowing FROM, relative to the bow, signed by
+    // which side it's on (0 = head to wind, ±π = dead run)
+    const psi = Math.atan2(Math.sin(relN + Math.PI), Math.cos(relN + Math.PI));
+
+    // Which side is leeward: the side the apparent wind has a component
+    // toward, in the boat's own lateral axis. Everything below — boom trim
+    // and which way lift pushes — is keyed off this one sign so they agree.
+    const bx = this._ax.set(1,0,0).applyQuaternion(this.quat);
+    const leewardSign = Math.sign(aw.x*bx.x + aw.z*bx.z) || 1;
+
+    // Trim the boom toward the sail's best angle of attack until the shrouds
+    // stop it going further out. Past that the sail can't hold its optimum
+    // incidence any more and the angle of attack grows on its own — which is
+    // exactly why a run is slower than a reach, without a special case for it.
+    const trimTarget = leewardSign*THREE.MathUtils.clamp(Math.abs(psi) - AOA_OPT, 0, BOOM_MAX);
+    this.sailAngle += (trimTarget - this.sailAngle)*Math.min(1, dt*2.2);
+    const AoA = Math.max(0, Math.abs(psi) - Math.abs(this.sailAngle));
+
+    // Lift/drag polar: lift rises to a peak at AOA_STALL then falls away as
+    // flow separates; drag rises through the same range and dominates once
+    // stalled (a stalled sail is just a sheet of cloth dragged by the wind).
+    const clShape = AoA < AOA_STALL
+      ? Math.sin(AoA/AOA_STALL*Math.PI/2)
+      : Math.cos(Math.min(1, (AoA-AOA_STALL)/(Math.PI/2-AOA_STALL))*Math.PI/2);
+    const Cl = CL_MAX*clShape;
+    const Cd = CD0_SAIL + (CD_MAX_SAIL-CD0_SAIL)*Math.sin(AoA)*Math.sin(AoA);
+
+    const q = 0.5*RHO_AIR*awSpeed*awSpeed;
+    this.driveAmount = (Cl+Cd)*this.sail;   // sail-billow visual only, see update()
+
+    // Drag acts along the apparent wind (downwind); lift acts perpendicular
+    // to it, toward leeward. Applied at the centre of effort, above the
+    // hull's lateral resistance, this is what actually makes her heel.
+    const invAw = awSpeed > 1e-4 ? 1/awSpeed : 0;
+    const dHatX = aw.x*invAw, dHatZ = aw.z*invAw;
+    let perpX = dHatZ, perpZ = -dHatX;
+    if(Math.sign(perpX*bx.x + perpZ*bx.z) !== leewardSign){ perpX = -perpX; perpZ = -perpZ; }
+    // The rig is in the air, so only a hull that is swamping should lose its
+    // drive — a boat floating on her lines must get all of it.
+    const rigScale = q*this.sailArea*this.sail*this.rigForce
+                     *Math.min(1, this.submersion*1.9);
+    const Flift = rigScale*Cl, Fdrag = rigScale*Cd;
     const rigRel = this._rel.set(0, this.mastTop*0.45, this.length*0.10).applyQuaternion(this.quat);
-    const rigF = drive*this.rigForce*this.submersion;
-    f.set(-Math.sin(this.sailAngle)*0.62, 0, Math.cos(this.sailAngle))
-     .applyQuaternion(this.quat).multiplyScalar(rigF);
+    f.set(perpX*Flift + dHatX*Fdrag, 0, perpZ*Flift + dHatZ*Fdrag);
     this.applyForce(f, rigRel, acc);
 
     // ── rudder ─────────────────────────────────────────────────
     const fwdSpeed = this.vel.dot(fwd);
     this.fwdSpeed = fwdSpeed;
     const rudRel = this._rel.set(0, -this.draft*0.6, -this.length*0.48).applyQuaternion(this.quat);
+    // a small lift-generating blade: force ∝ ½ρClA·v² with Cl from the same
+    // sin(2·angle) shape a stalling foil follows — it just never reaches the
+    // falling part of that curve because the tiller physically stops at ±35°
+    const rudCl = Math.sin(2*this.rudder*RUDDER_MAX);
+    const rudArea = this.draft*this.beam*0.10;
     f.set(1,0,0).applyQuaternion(this.quat)
-     .multiplyScalar(-this.rudder*fwdSpeed*Math.abs(fwdSpeed)*70*this.submersion);
+     .multiplyScalar(-0.5*RHO*rudCl*rudArea*fwdSpeed*Math.abs(fwdSpeed)*this.submersion*6.0);
     this.applyForce(f, rudRel, acc);
 
     // ── damping and integration ────────────────────────────────
@@ -420,18 +521,27 @@ export class Ship {
     // lever abruptly on steep crests and can leave the hull stable upside-down.
     const up = this._v.set(0,1,0).applyQuaternion(this.quat);
     acc.torque.add(this._lev.set(-up.z, 0, up.x).multiplyScalar(this.mass*G*this.rightingGM));
-    acc.force.addScaledVector(this.vel, -this.mass*0.06);
+    acc.force.addScaledVector(this.vel, -this.mass*0.02);
     // Strong roll/pitch damping need not make the rudder's yaw response syrupy.
     f.copy(this.angVel).applyQuaternion(invQ);
     f.set(f.x*this.rollDamping, f.y*0.85, f.z*this.rollDamping)
      .applyQuaternion(this.quat).multiplyScalar(-this.mass);
     acc.torque.add(f);
 
-    this.vel.addScaledVector(acc.force, dt/this.mass);
+    // Linear: convert to body axes so added mass can be anisotropic (heave
+    // and sway drag far more water along than surge does) before integrating.
+    const fb = this._v.copy(acc.force).applyQuaternion(invQ);
+    fb.x /= (this.mass + this.addedMass.x);
+    fb.y /= (this.mass + this.addedMass.y);
+    fb.z /= (this.mass + this.addedMass.z);
+    fb.applyQuaternion(this.quat);
+    this.vel.addScaledVector(fb, dt);
 
-    // torque → angular acceleration through the body-space inertia
+    // torque → angular acceleration through the body-space inertia, inflated
+    // by added inertia (pitch picks up the most — it's coupled to heave at
+    // the bow and stern; yaw barely moves any extra water at all)
     const w = this._w.copy(acc.torque).applyQuaternion(invQ);
-    w.set(w.x/this.I.x, w.y/this.I.y, w.z/this.I.z);
+    w.set(w.x/(this.I.x+this.addedI.x), w.y/(this.I.y+this.addedI.y), w.z/(this.I.z+this.addedI.z));
     w.applyQuaternion(this.quat);
     this.angVel.addScaledVector(w, dt);
 
@@ -455,14 +565,19 @@ export class Ship {
     }
   }
 
-  /* An instantaneous kick — a blast wave, a grounding, a wave slamming home. */
+  /* An instantaneous kick — a blast wave, a grounding, a wave slamming home.
+     Added mass resists a shove just as it resists any other acceleration, so
+     this goes through the same anisotropic effective mass/inertia as step(). */
   impulse(worldF, atWorld){
-    this.vel.addScaledVector(worldF, 1/this.mass);
+    const inv = this._invQ.copy(this.quat).invert();
+    const fb = this._v.copy(worldF).applyQuaternion(inv);
+    fb.x /= (this.mass+this.addedMass.x); fb.y /= (this.mass+this.addedMass.y); fb.z /= (this.mass+this.addedMass.z);
+    fb.applyQuaternion(this.quat);
+    this.vel.add(fb);
     this._rel.copy(atWorld).sub(this.pos).multiplyScalar(-1);
     this._lev.copy(this._rel).cross(worldF);
-    const inv = this._invQ.copy(this.quat).invert();
     this._w.copy(this._lev).applyQuaternion(inv);
-    this._w.set(this._w.x/this.I.x, this._w.y/this.I.y, this._w.z/this.I.z);
+    this._w.set(this._w.x/(this.I.x+this.addedI.x), this._w.y/(this.I.y+this.addedI.y), this._w.z/(this.I.z+this.addedI.z));
     this._w.applyQuaternion(this.quat);
     this.angVel.add(this._w);
     const wl = this.angVel.length();
@@ -556,13 +671,16 @@ export class Fleet {
       mass: 3600*scale*scale, heading: Math.random()*Math.PI*2,
       probesLong: 6, probesLat: 3,
     }, pal));
-    s.sail = 0.55 + Math.random()*0.45;
+    s.sailFull = 0.55 + Math.random()*0.45;   // what she'd carry in a soft breeze
+    s.sail = s.sailFull;
     s.goal = new THREE.Vector3(around.x + (Math.random()-0.5)*3000, 0, around.z + (Math.random()-0.5)*3000);
     this.boats.push(s);
     return s;
   }
 
   update(dt, wind, around, camPos){
+    // Other crews reef for the same reason you do, and are better at it.
+    const carry = THREE.MathUtils.clamp(45/Math.max(1, wind.lengthSq()), 0.18, 1);
     while(this.boats.length < this.max) this.spawn(around);
     for(let i = this.boats.length-1; i >= 0; i--){
       const b = this.boats[i];
@@ -587,6 +705,7 @@ export class Fleet {
       if(Math.hypot(b.goal.x-b.pos.x, b.goal.z-b.pos.z) < 120 || Math.random() < dt*0.02){
         b.goal.set(around.x + (Math.random()-0.5)*3200, 0, around.z + (Math.random()-0.5)*3200);
       }
+      b.sail = Math.min(b.sailFull ?? b.sail, carry);
       b.update(dt, wind, camPos);
     }
   }
