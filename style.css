@@ -226,6 +226,9 @@ input[type=range]{padding:0;width:110px;accent-color:var(--gold)}
   text-align:center;font-size:9.5px;letter-spacing:.3em;text-transform:uppercase;
   color:#f0b23c;text-shadow:0 0 10px rgba(240,178,60,.55);animation:blink 1.1s infinite}
 #pi-warn.crit{color:#e4574c;text-shadow:0 0 10px rgba(228,87,76,.6)}
+.pi-controls{margin-top:8px;font-size:10px;line-height:1.5;color:#e0d1ab}
+#pilot-sight{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font:28px monospace;color:#f8e5a2;text-shadow:0 1px 3px #000;pointer-events:none}
+.nuclear-ready{color:#ffd25e!important;text-shadow:0 0 8px #ec9c3d}
 
 /* ───────── net status ───────── */
 #net-status{position:absolute;top:46px;left:50%;transform:translateX(-50%);

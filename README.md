@@ -194,11 +194,9 @@ looking for them.
 There is no target marker, no CCIP, no release cue and no kill confirmation —
 an altimeter, an airspeed indicator, a compass, fuel, stores and a window.
 
-The sailor's client sends **every boat, unlabelled**, in an order shuffled once
-from the world seed. The pilot's client is not told which contact is the human
-and cannot be, because the information is not in the packet. Working out which
-wake belongs to a person is the pilot's entire job, and the only way to do it is
-to watch what a boat does when it thinks it has been seen.
+The sailor's client sends **every boat, unlabelled**, in a privately shuffled
+order that cannot be reconstructed from the shared world seed. There are no
+target labels or markers; the pilot watches the wakes to find the sailor.
 
 Authority splits along who can see what. The sailor owns the sea, every hull and
 all damage. The pilot owns the aircraft. A release is an event carrying the
@@ -228,7 +226,35 @@ characters, which is short enough to paste into a chat window.
 
 `W`/`S` pitch · `A`/`D` roll · `Q`/`R` rudder · `Space`/`Ctrl` throttle ·
 `Shift` afterburner · `X` airbrake · `F` release · `V` view · `B` reset the
-altimeter datum · `[`/`]` nose-down/nose-up trim.
+altimeter datum · `[`/`]` nose-down/nose-up trim · hold `G` minigun · hold `Z`
+zoom · hold `Alt` and move the mouse to look around (release to centre).
+
+The pilot has a clear cockpit view independent of the sailor's eyesight,
+reduced distance haze, a forward gun sight, and a 32° zoom view. Weather still
+affects visibility. The sight hides while looking away from the gun direction.
+
+Each sortie carries 600 minigun rounds and the mixed bomb loadout. The sailor
+draws the loadout once: there is a **10% chance of one extra nuclear store**,
+placed first in the release order. The panel shows the next store and remaining
+gun ammunition. `F` releases one store per press; `G` fires five-round bursts.
+
+The nuclear store is a stylised game effect: a bright flash at every graphics
+setting, rising fireball and mushroom cloud, expanding shock ring, and a large
+outward-moving tsunami. The wave deforms both the rendered ocean and the water
+sampled by boat buoyancy, then dissipates. Returning to the menu clears it.
+
+Both players must use protocol version 2 (refresh the game before connecting).
+The sailor enforces the assigned store inventory, single-use message sequence
+numbers, gun ammunition and burst rate, and bounded release coordinates.
+The network rejects malformed poses and oversized messages/invites. This is
+still peer-to-peer: each player controls their own simulation, so these checks
+do not provide server-authoritative anti-cheat.
+
+### Multiplayer verification
+
+Serve the repository and open `tests/multiplayer.html` to run the flight,
+particle, gameplay, shore, weapon-budget, replay, invite-limit, and tsunami
+checks. `tests/preview.html` remains the interactive effects viewer.
 
 The aircraft starts with attitude, trim and throttle balanced for its current
 airspeed, fuel, stores and air density. This is a one-time spawn adjustment;

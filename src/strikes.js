@@ -7,6 +7,8 @@ import { HazardFX } from './fx/munition_vfx.js';
 import { munition, loadoutForWave } from './fx/munitions.js';
 import { MunitionEffects } from './fx/munition_effects.js';
 import { stream } from './rng.js';
+import { Minigun } from './fx/minigun.js';
+import { NuclearFX } from './fx/nuclear.js';
 
 /* Contested waters. Flight, stores and blast visuals live in focused
    modules; this is the gameplay seam that schedules runs, integrates
@@ -26,6 +28,8 @@ export class Strikes {
     this.interval = 95;
     this.wave = 0;
     this.bombs = [];
+    this.gun = new Minigun(scene,field,cb);
+    this.nuclear = new NuclearFX(scene,field);
     // Replaced each sortie by loadoutForWave(); this is only the opener.
     this.storeKinds = loadoutForWave(1).slice();
     // Set to an array to pin the next sortie's load (creative mode does
@@ -145,6 +149,7 @@ export class Strikes {
 
   arm(on, interval = 95){
     this.active = !!on;
+    this.gun.clear(); this.nuclear.clear();
     this.interval = interval;
     this.timer = on ? 48 : 1e9;
     this.wave = 0;
@@ -246,6 +251,7 @@ export class Strikes {
      but only the sailor's client is authoritative for what it does when
      it lands, because the sailor is the one who can see that. */
   dropStore(kind, pos, vel, env = {}){
+    if(this.bombs.length >= 16) return false;
     if(munition(kind).cluster)return this.clusters.spawn(kind,pos,vel,env);
     const mesh = buildBomb(kind);
     mesh.position.set(pos.x, pos.y, pos.z);
@@ -260,6 +266,8 @@ export class Strikes {
 
   update(dt, target, ship, playerPos, wind, env = {}){
     this.blast.update(dt, playerPos);
+    this.nuclear.update(dt,playerPos);
+    this.gun.update(dt,ship,playerPos);
     this.updateHazards(dt, playerPos, wind);
     // Anything spawned straight into HazardFX (creative mode) is just as
     // dangerous as anything a bomb left — one list, no special cases.
@@ -270,7 +278,7 @@ export class Strikes {
       hazards: this._allHaz, playerPos, ship, wind,
       submerged: !!env.submerged, rain: env.rain || 0, washing: env.washing || 0,
     });
-    this.flash = this.blast.flash;
+    this.flash = Math.max(this.blast.flash,this.nuclear.flash);
     this.updateMarkers(dt);
 
     // Residual effects finish while disarmed; arm() clears any live stores.
@@ -398,6 +406,10 @@ export class Strikes {
   detonate(point, ship, playerPos, kind = 'mk83'){
     const spec = munition(kind);
     const power = spec.blast?.power ?? 1;
+    if(spec.nuclear){
+      this.nuclear.detonate(point);
+      this.cb.toast?.('Flash — an enormous wave is spreading from the impact.','bad');
+    }
     const surface=this.cb.landHeight?.(point.x,point.z) ?? -40;
     if(power>0){
       if(surface>this.field.height(point.x,point.z)+0.1)this.blast.land(point,power);
@@ -455,6 +467,7 @@ export class Strikes {
     this.blast.dispose();
     this.hazardFX.dispose();
     this.clusters.dispose();
+    this.gun.dispose(); this.nuclear.dispose();
     for(const m of this.markers){ this.scene.remove(m.mesh); m.mesh.material.dispose(); }
     this.markerGeo.dispose();
     this.scene.remove(this.trails);

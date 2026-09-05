@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WeaponLedger, validWorld, finite } from './weapons.js';
 
 /* ────────────────────────────────────────────────────────────────
    Asymmetric session: SAILOR against PILOT.
@@ -84,9 +85,7 @@ function blendPose(a, b, u){
   };
 }
 function blendAngle(a, b, u){
-  let d = b - a;
-  while(d > Math.PI) d -= Math.PI*2;
-  while(d < -Math.PI) d += Math.PI*2;
+  const d = ((b-a+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
   return a + d*u;
 }
 function blendJet(a, b, u){
@@ -123,6 +122,8 @@ export class Session {
     this._order = null;                    // fixed shuffle, decided once
 
     this.stats = { sent:0, recv:0 };
+    this.onGun=opts.onGun || null;
+    this.weapons=null; this._weaponSeq=0; this._latestJet=null;
 
     this.net.onMessage = (type, p) => this._recv(type, p);
   }
@@ -143,23 +144,37 @@ export class Session {
   }
 
   _recv(type, p){
+    if(!p || typeof p !== 'object' || Array.isArray(p)) return;
     this.stats.recv++;
     switch(type){
       case 'world':
+        if(this.role !== 'pilot' || this.ready) return;
+        if(!validWorld(p)){ this.onToast('Incompatible multiplayer invite. Both players need the latest game.','bad'); return; }
         this.world = p; this.ready = true; this.onWorld?.(p);
         break;
       case 'boats': {
+        if(this.role !== 'pilot' || !this.ready || !finite(p.t,1e8) || !Array.isArray(p.b) || p.b.length>14
+          || !p.b.every(b => b && ['x','y','z'].every(k=>finite(b[k])) && ['h','r','p'].every(k=>finite(b[k],Math.PI*4)))) return;
         const t = this._mapTime(p.t);
         this.boats.push(t, p.b);
         break;
       }
       case 'jet': {
+        if(this.role !== 'sailor' || !this.ready || !finite(p.t,1e8)
+          || !['x','y','z'].every(k=>finite(p[k])) || !['vx','vy','vz'].every(k=>finite(p[k],1800))
+          || !['qx','qy','qz','qw'].every(k=>finite(p[k],1.01)) || !finite(p.burner,1)) return;
+        this._latestJet={...p,at:this.now()};
         const t = this._mapTime(p.t);
         this.jet.push(t, p);
         break;
       }
       case 'drop':
+        if(this.role !== 'sailor' || !this.weapons?.accept(type,p,this.now(),this._latestJet)) return;
         this.onDrop?.(p);
+        break;
+      case 'gun':
+        if(this.role !== 'sailor' || !this.weapons?.accept(type,p,this.now(),this._latestJet)) return;
+        this.onGun?.(p);
         break;
       case 'hit':
         this.onHit?.(p);
@@ -172,7 +187,7 @@ export class Session {
 
   /* ── sailor → pilot ────────────────────────────────────────
      Every hull on the water in one packet, with nothing in it that says
-     which is which. The order is shuffled once from the world seed and
+     which is which. The order is privately shuffled by the sailor and
      then held, so a contact keeps its slot frame to frame (interpolation
      needs that) without the slot ever meaning anything. */
   sendBoats(playerShip, fleetBoats){
@@ -182,9 +197,9 @@ export class Session {
 
     if(!this._order || this._order.length !== all.length){
       this._order = all.map((_, i) => i);
-      // deterministic shuffle from the seed we already agreed on
-      let s = (this.world?.seed ?? 1) >>> 0;
-      const rnd = () => { s = (s*1664525 + 1013904223) >>> 0; return s/4294967296; };
+      // Keep the permutation independent of the world seed sent to the pilot.
+      const random = new Uint32Array(1);
+      const rnd = () => { crypto.getRandomValues(random); return random[0]/4294967296; };
       for(let i = this._order.length-1; i > 0; i--){
         const j = Math.floor(rnd()*(i+1));
         [this._order[i], this._order[j]] = [this._order[j], this._order[i]];
@@ -206,7 +221,7 @@ export class Session {
   }
 
   /* ── pilot → sailor ──────────────────────────────────────── */
-  sendJet(ac, burner){
+  sendJet(ac, burner, reliable = false){
     this.net.send('jet', {
       t: this.now(),
       x:+ac.pos.x.toFixed(2), y:+ac.pos.y.toFixed(2), z:+ac.pos.z.toFixed(2),
@@ -214,19 +229,28 @@ export class Session {
       qz:+ac.quat.z.toFixed(4), qw:+ac.quat.w.toFixed(4),
       vx:+ac.vel.x.toFixed(1), vy:+ac.vel.y.toFixed(1), vz:+ac.vel.z.toFixed(1),
       burner: +(burner||0).toFixed(2),
-    }, false);
+    }, reliable);
     this.stats.sent++;
   }
 
   /* A store leaving a pylon is a one-shot fact both sides must agree on,
      so it goes reliable and carries the exact release conditions. */
   sendDrop(rel){
-    this.net.send('drop', {
+    const sent=this.net.send('drop', {
+      seq:this._weaponSeq,
       t: this.now(), id: rel.munitionId,
       p: [rel.pos.x,rel.pos.y,rel.pos.z],
       v: [rel.vel.x,rel.vel.y,rel.vel.z],
       windX:rel.windX,windZ:rel.windZ,simTime:rel.simTime,
     }, true);
+    if(sent) this._weaponSeq++;
+    return sent;
+  }
+
+  sendGun(p,v){
+    const sent=this.net.send('gun',{seq:this._weaponSeq,p,v},true);
+    if(sent) this._weaponSeq++;
+    return sent;
   }
 
   /* The sailor telling the pilot what a store actually did. This is the
@@ -237,7 +261,10 @@ export class Session {
     this.net.send('hit', { kind, near: !!near }, true);
   }
 
-  sendWorld(world){ this.net.send('world', world, true); this.world = world; this.ready = true; }
+  sendWorld(world){
+    this.weapons=new WeaponLedger(world.loadout);
+    this.net.send('world', world, true); this.world = world; this.ready = true;
+  }
 
   /* ── per-frame ────────────────────────────────────────────── */
   update(dt, ctx = {}){

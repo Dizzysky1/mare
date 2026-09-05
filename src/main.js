@@ -10,6 +10,7 @@ import { Survival, Quest, LOGBOOK } from './survival.js';
 import { Post } from './post.js';
 import { Strikes } from './strikes.js';
 import { Net } from './net.js';
+import { sortieLoadout, PROTOCOL } from './weapons.js';
 import { Session } from './multiplayer.js';
 import { Pilot } from './pilot.js';
 import { buildF18 } from './fx/f18.js';
@@ -183,6 +184,7 @@ function governor(dt){
 
 /* ── input ──────────────────────────────────────────────────── */
 const input = { fwd:0, back:0, left:0, right:0, jump:0, crouch:0, sprint:0, slow:0 };
+function lockPointer(){ canvas.requestPointerLock()?.catch(()=>{}); }
 let sens = 0.0022;
 const KEYS = {
   KeyW:'fwd', KeyS:'back', KeyA:'left', KeyD:'right', ArrowUp:'fwd', ArrowDown:'back',
@@ -196,9 +198,11 @@ addEventListener('keydown', e => {
     if(e.code === 'KeyQ') pilotKeys.rudderL = 1;
     if(e.code === 'KeyR') pilotKeys.rudderR = 1;
     if(e.code === 'KeyX') pilotKeys.airbrake = 1;
+    if(e.code === 'KeyG') pilotKeys.gun = 1;
+    if(e.code === 'KeyZ') pilotKeys.zoom = 1;
     if(e.code === 'BracketLeft')  pilotKeys.trimDown = 1;
     if(e.code === 'BracketRight') pilotKeys.trimUp = 1;
-    if(e.code === 'KeyF'){
+    if(e.code === 'KeyF' && !e.repeat){
       // The pilot must watch their own store fall too. sendDrop only tells
       // the OTHER end; without this the bomb exists on the sailor's screen
       // and nowhere on the pilot's, which is exactly backwards.
@@ -217,7 +221,7 @@ addEventListener('keydown', e => {
     if(e.code === 'KeyM') toggleChart();
     if(e.code === 'KeyQ' && playerShip) playerShip.sail = Math.max(0, playerShip.sail - 0.2);
     if(e.code === 'KeyR' && playerShip) playerShip.sail = Math.min(1, playerShip.sail + 0.2);
-    if(e.code === 'KeyF') gov.manual = !gov.manual;
+    if(e.code === 'KeyF' && !mode.pilot) gov.manual = !gov.manual;
   }
   if(e.code === 'Escape'){
     if(!chartEl.classList.contains('hidden')) closeChart();
@@ -232,6 +236,8 @@ addEventListener('keyup', e => {
   if(e.code === 'KeyQ') pilotKeys.rudderL = 0;
   if(e.code === 'KeyR') pilotKeys.rudderR = 0;
   if(e.code === 'KeyX') pilotKeys.airbrake = 0;
+  if(e.code === 'KeyG') pilotKeys.gun = 0;
+  if(e.code === 'KeyZ') pilotKeys.zoom = 0;
   if(e.code === 'BracketLeft')  pilotKeys.trimDown = 0;
   if(e.code === 'BracketRight') pilotKeys.trimUp = 0;
 });
@@ -245,10 +251,11 @@ document.addEventListener('pointerlockchange', () => {
 });
 addEventListener('mousemove', e => {
   if(document.pointerLockElement !== canvas || !player) return;
+  if(mode.pilot){ if(input.slow) pilotSeat?.look(e.movementX,e.movementY,sens); return; }
   player.look(e.movementX, e.movementY, sens);
 });
 canvas.addEventListener('mousedown', () => {
-  if(state === 'play' && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+  if(state === 'play' && document.pointerLockElement !== canvas) lockPointer();
 });
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
@@ -363,7 +370,7 @@ document.getElementById('btn-creative')?.addEventListener('click', startCreative
 document.getElementById('btn-resume').addEventListener('click', resume);
 document.getElementById('btn-quit').addEventListener('click', toMenu);
 document.getElementById('btn-menu').addEventListener('click', toMenu);
-document.getElementById('btn-again').addEventListener('click', () => startMode(mode.key));
+document.getElementById('btn-again').addEventListener('click', () => mode.multiplayer ? toMenu() : startMode(mode.key));
 
 function startMode(key, mpWorld){
   mode = MODES[key];
@@ -443,7 +450,8 @@ function startMode(key, mpWorld){
     pilotSeat = new Pilot({
       scene, field, camera, session, atmosphere:atmos, weather,
       onToast:(t,k)=>ui.toast(t,k),
-      pos:{ x:0, y:1500, z:-7000 }, heading:0, speed:188, loadout:'mixed',
+      pos:{ x:0, y:1500, z:-7000 }, heading:0, speed:188, loadout:mpWorld.loadout,
+      onGun:(p,v)=>{ strikes?.gun.fire(p,v); audio.blip({freq:75,type:'sawtooth',dur:0.075,gain:0.06,sweep:0.6}); },
     });
     player.setState('fly');
     player.pos.set(0, 1500, -7000);
@@ -479,16 +487,16 @@ function startMode(key, mpWorld){
   ui.el.over.classList.add('hidden');
   ui.el.hud.classList.remove('hidden');
   ui.setStats(survival, mode.survival && !mode.pilot);
-  ui.el.crosshair.style.display = mode.spectator ? 'none' : '';
+  ui.el.crosshair.style.display = mode.spectator || mode.pilot ? 'none' : '';
   state = 'play';
   gov.q = 10; gov.cooldown = 2.5; applyQuality();
   audio.fade(1, 2.0);
-  canvas.requestPointerLock();
+  lockPointer();
 
   if(mode.pilot){
     // The controls are not the sailing controls and nothing else says so.
     ui.toast('W/S pitch · A/D roll · Q/R rudder · Space and Ctrl throttle', 'dim');
-    setTimeout(() => ui.toast('F releases · V view · X airbrake · [ ] trim · B resets the altimeter', 'dim'), 5200);
+    setTimeout(() => ui.toast('F releases · G minigun · hold Z to zoom · V view · X airbrake · [ ] trim', 'dim'), 5200);
     setTimeout(() => ui.toast('Nothing will tell you which boat is the person.', 'bad'), 11000);
   } else ui.toast(mode.spectator
     ? 'Nothing to do. That is the point.'
@@ -575,6 +583,13 @@ function updateCardio(dt){
    simulation knows the world exactly; this is the part they can see. */
 function updateVision(dt){
   if(!vision || !player) return;
+  if(mode.pilot){
+    const u=post.comp.uniforms;
+    u.uVisionOn.value=1;
+    for(const k of ['uBlur','uDroplets','uFog','uSalt','uScratches','uDazzle']) u[k].value=0;
+    u.uExposureMul.value=1.12; u.uSatMul.value=1; u.uColourMatrix.value.identity();
+    return;
+  }
   const night = sunInfo.night;
   vision.update(dt, {
     weather, atmosphere: atmos,
@@ -625,10 +640,9 @@ function updateCanopy(){
   const c = pilotSeat.canopy, u = post.comp.uniforms;
   u.uVisionOn.value = 1;
   u.uDroplets.value = Math.max(u.uDroplets.value, c.droplets);
-  u.uFog.value = THREE.MathUtils.clamp(u.uFog.value + c.fog*0.8 + c.veil*0.7, 0, 1);
-  // Inside cloud there is simply nothing to see, and the instruments are
-  // the only thing left. This is the mechanic, not an effect.
-  u.uBlur.value = Math.max(u.uBlur.value, c.inCloud*3.2);
+  u.uFog.value = THREE.MathUtils.clamp(c.fog*0.2 + c.veil*0.28, 0, 0.4);
+  // Keep weather visible without stacking the sailor's vision impairments.
+  u.uBlur.value = c.inCloud*0.45;
 }
 
 /* ── the instrument panel ───────────────────────────────────── */
@@ -636,6 +650,8 @@ const pel = id => document.getElementById(id);
 function updatePilotHud(){
   const on = !!(pilotSeat && mode.pilot && state === 'play');
   pel('pilot-hud')?.classList.toggle('hidden', !on);
+  pel('pilot-sight')?.classList.toggle('hidden',!on || pilotSeat.view!=='cockpit'
+    || Math.abs(pilotSeat.lookPitch)+Math.abs(pilotSeat.lookYaw)>0.01);
   if(!on) return;
   const r = pilotSeat.readout();
   const set = (id, v) => { const e = pel(id); if(e) e.textContent = v; };
@@ -645,6 +661,8 @@ function updatePilotHud(){
   set('pi-vsi', r.vsi);
   set('pi-fuel', r.fuel);
   set('pi-stores', r.stores);
+  set('pi-next',r.nextStore.toUpperCase()); set('pi-ammo',r.gunAmmo);
+  pel('pi-next')?.classList.toggle('nuclear-ready',r.nextStore==='nuke');
   set('pi-g', r.g.toFixed(1));
   set('pi-aoa', r.aoa.toFixed(1));
   const bar = pel('pi-fuel-bar');
@@ -733,7 +751,7 @@ function openChart(){
 function closeChart(){
   if(chartEl.classList.contains('hidden')) return;
   chartEl.classList.add('hidden');
-  if(state === 'play') canvas.requestPointerLock();
+  if(state === 'play') lockPointer();
 }
 
 /* A sandbox: free flight, spawn anything, drive the sky by hand. */
@@ -743,7 +761,7 @@ function closeChart(){
    broker a match. The sailor generates an invite, the pilot answers it,
    and from then on the two browsers talk directly. */
 
-const pilotKeys = { rudderL:0, rudderR:0, airbrake:0, trimUp:0, trimDown:0 };
+const pilotKeys = { rudderL:0, rudderR:0, airbrake:0, trimUp:0, trimDown:0, gun:0, zoom:0 };
 
 const mel = id => document.getElementById(id);
 function multiStatus(t){ const e = mel('multi-status'); if(e) e.textContent = t || ''; }
@@ -777,6 +795,7 @@ function makeNet(){
    sends it. The pilot rebuilds the identical sea from that seed. */
 function sessionWorld(){
   return {
+    protocol:PROTOCOL, loadout:sortieLoadout(),
     seed: runSeed >>> 0, hour, swell: mode.swell, windDeg: mode.windDeg,
     windSpeed: mode.windSpeed, storm: mode.storm, chop: mode.chop,
   };
@@ -799,6 +818,7 @@ function beginSession(role){
                                           { x:d.v[0], y:d.v[1], z:d.v[2] }, d);
       if(role === 'sailor') ui.toast('Something has come off it.', 'bad');
     },
+    onGun: d => { if(role === 'sailor') strikes?.gun.fire(d.p,d.v); },
     onHit: h => {
       // The pilot's only feedback, and it is the sailor's word for it.
       if(role !== 'pilot') return;
@@ -918,12 +938,13 @@ function startCreative(){
   state = 'play';
   gov.q = 10; gov.cooldown = 2.5; applyQuality();
   creative.enter();
-  canvas.requestPointerLock();
+  lockPointer();
 }
 
 function pause(){
   if(state !== 'play') return;
   state = 'pause';
+  for(const k in pilotKeys) pilotKeys[k]=0;
   document.exitPointerLock();
   ui.el.pause.classList.remove('hidden');
   ui.el.pauseSub.textContent = mode.spectator ? 'The sea keeps going without you.' : quest ? quest.text : '';
@@ -934,7 +955,7 @@ function resume(){
   state = 'play';
   ui.el.pause.classList.add('hidden');
   audio.fade(1, 0.6);
-  canvas.requestPointerLock();
+  lockPointer();
 }
 function toMenu(){
   if(creative && creative.active) creative.exit();
@@ -951,7 +972,7 @@ function toMenu(){
 }
 function gameOver(title, sub){
   state = 'over';
-  if(strikes) strikes.arm(false);
+  if(strikes){ strikes.active=false; strikes.flyover.abort(); }
   document.exitPointerLock();
   ui.el.overTitle.textContent = title;
   ui.el.overSub.textContent = sub;
@@ -1031,7 +1052,7 @@ function readLogbook(again){
   const key = mode.key === 'medium' ? 'medium' : mode.key === 'hard' ? 'hard' : 'insane';
   const book = L || LOGBOOK[key];
   document.exitPointerLock();
-  ui.showReader(book, () => { if(state === 'play') canvas.requestPointerLock(); });
+  ui.showReader(book, () => { if(state === 'play') lockPointer(); });
   if(L){
     ui.toast('Now you know why you sailed.');
     ui.setObjective(quest.status(player.pos));
@@ -1067,7 +1088,8 @@ function frame(){
   if(state === 'loading'){ renderer.render(scene, camera); return; }
 
   const playing = state === 'play';
-  const simDt = (playing || state === 'menu') ? dt : 0;
+  const cinematic=state==='over' && strikes?.nuclear.age<40;
+  const simDt = (playing || state === 'menu' || cinematic) ? dt : 0;
   elapsed += simDt;
 
   field.update(simDt);
@@ -1137,6 +1159,7 @@ function frame(){
   }
 
   sunInfo = sky.update(hour, storm, dt, playerShip ? playerShip.pos : focus);
+  if(mode.pilot) scene.fog.density*=0.55;
 
   // the deck lamp, lit when it earns its keep
   if(playerShip && playerShip.lamp){
@@ -1182,7 +1205,7 @@ function frame(){
     if(survival.dead) gameOver('Lost with all hands', survival.cause);
   }
 
-  if(playing && quest && !mode.spectator){
+  if(playing && quest && !mode.spectator && !mode.pilot){
     const st = quest.status(player.pos);
     ui.setObjective(st);
     if(quest.checkWin(player.pos, player.state === 'land')){
@@ -1211,7 +1234,7 @@ function frame(){
   /* ── ordnance ───────────────────────────────────────────── */
   if(strikes && simDt > 0){
     strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip,
-      player ? player.pos : focus, wind, {
+      mode.pilot ? focus : player ? player.pos : focus, wind, {
         submerged: !!(player && player.state === 'swim'
                       && player.pos.y + 1.4 < field.height(player.pos.x, player.pos.z)),
         rain: storm > 0.4 ? (storm-0.4)*1.6 : 0,
@@ -1288,6 +1311,7 @@ function frame(){
   }
 
   /* ── post ───────────────────────────────────────────────── */
+  ui.el.flash.style.opacity=THREE.MathUtils.clamp((strikes?.nuclear.flash || 0)*0.45,0,0.98);
   const sunDir = sky.uniforms.uSunDir.value;
   const fwdV = camera.getWorldDirection(tmp3);
   const sunFront = sunDir.dot(fwdV) > 0.05;
