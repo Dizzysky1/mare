@@ -287,7 +287,7 @@ function aOrAn(word){ return /^[aeiou]/i.test(word) ? 'an' : 'a'; }
 function backgroundProse(bg){
   const label = bg.trade.replace(/-/g, ' ');
   const lines = [];
-  lines.push(`Out of ${bg.origin}, where ${bg.nautical ? 'most households have a share in a boat' : 'the sea is a neighbour, not a living'}.`);
+  lines.push(`${bg.nautical ? 'Most households there have a share in a boat' : 'There the sea is a neighbour, not a living'}.`);
   if(bg.nautical){
     lines.push(bg.yearsAtSea > 10
       ? `${bg.yearsAtSea} years ${label === 'fisherman' ? 'fishing' : `working as ${aOrAn(label)} ${label}`}, long enough that most of it is done without being thought about.`

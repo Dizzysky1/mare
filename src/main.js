@@ -14,6 +14,7 @@ import { Cardio } from './physiology.js';
 import { Weather } from './weather.js';
 import { Atmosphere } from './atmosphere.js';
 import { reseedWorld, worldSeed, stream } from './rng.js';
+import { generateCharacter, cardioOptionsFor, knows, describe as describeCharacter } from './character.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -335,6 +336,11 @@ function startMode(key){
   runSeed = (Date.now() ^ (Math.random()*0xffffffff)) >>> 0;
   reseedWorld(runSeed);
 
+  // A different person each run: their eyes, their constitution and what
+  // they happen to know all come from this one seed.
+  character = generateCharacter(runSeed);
+  cardio = new Cardio(cardioOptionsFor(character));
+
   quest = new Quest(mode, world);
   discovered.clear();
   chartEl.classList.add('hidden');
@@ -427,7 +433,8 @@ function nearLandFactor(){
 }
 
 /* ── the body ───────────────────────────────────────────────── */
-const cardio = new Cardio();
+let cardio = new Cardio();
+let character = null;
 
 /* Feed the cardiovascular model what the game knows about the player. */
 function updateCardio(dt){
@@ -884,7 +891,8 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get player(){return player;}, get ship(){return playerShip;},
   get fleet(){return fleet;}, get world(){return world;},
   get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
-  get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;}, cardio,
+  get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;},
   get weather(){return weather;}, get atmos(){return atmos;},
   get runSeed(){return runSeed;}, reseedWorld, worldSeed, get gulls(){return gulls;},
+  get character(){return character;}, get cardio(){return cardio;}, knows, describeCharacter,
   get hour(){return hour;}, set hour(v){hour = v;} };
