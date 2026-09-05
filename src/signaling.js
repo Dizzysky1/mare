@@ -1,3 +1,5 @@
+import './multiplayer-fixes.js';
+
 /* ────────────────────────────────────────────────────────────────
    Ephemeral signaling broker for frictionless invite links.
 
@@ -29,14 +31,30 @@ export function createMatchId(){
 export function parseJoinParam(raw){
   if(!raw) return null;
   let str = String(raw).trim();
-  // Strip full URL if pasted
-  const hashIdx = str.indexOf('#join=');
-  if(hashIdx !== -1) str = str.slice(hashIdx + 6);
-  const qIdx = str.indexOf('?join=');
-  if(qIdx !== -1) str = str.slice(qIdx + 6);
-  // Strip any trailing params
+  if(!str) return null;
+
+  // Links are the primary matchmaking surface. Parse them as URLs first so
+  // copied links keep working with extra query/hash parameters or encoding.
+  try {
+    const url = new URL(str, globalThis.location?.href || 'https://mare.invalid/');
+    const hash = url.hash.startsWith('#') ? new URLSearchParams(url.hash.slice(1)).get('join') : null;
+    const query = url.searchParams.get('join');
+    if(hash || query) str = hash || query;
+  } catch {}
+
+  // Also accept a bare #join= / ?join= fragment and the existing manual
+  // fallback codes for people who cannot use the relay.
+  if(str.startsWith('#') || str.startsWith('?')){
+    const value = new URLSearchParams(str.slice(1)).get('join');
+    if(value) str = value;
+  }
+
+  try { str = decodeURIComponent(str); } catch { return null; }
   str = str.split('&')[0].split('#')[0].trim();
-  return decodeURIComponent(str);
+
+  if(/^m_[a-z0-9]{8}$/i.test(str)) return str.toLowerCase();
+  if(/^[zu][A-Za-z0-9_-]+$/.test(str)) return str;
+  return null;
 }
 
 export async function publishSignal(topic, message){
