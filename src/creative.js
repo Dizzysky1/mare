@@ -456,10 +456,10 @@ export class Creative {
     if(!this.strikes){ this._toast('No strike controller wired up.'); return; }
     const id = MUNITION_CHOICES[this.munitionIdx];
     const pattern = LOADOUTS[id] || [id];
-    const prevKinds = this.strikes.storeKinds;
-    this.strikes.storeKinds = Array.from({ length:6 }, (_, i) => pattern[i % pattern.length]);
+    const prevForce = this.strikes.forceKinds;
+    this.strikes.forceKinds = Array.from({ length:6 }, (_, i) => pattern[i % pattern.length]);
     this.strikes.launch(pos, null);
-    this.strikes.storeKinds = prevKinds;
+    this.strikes.forceKinds = prevForce;
     this._toast(`Strike called — ${munitionLabel(id)}.`, 'bad');
   }
 

@@ -251,6 +251,14 @@ async function boot(){
       if(survival.health <= 0){ survival.dead = true; survival.cause = why; }
       else ui.toast(why, 'bad');
     },
+    // A near miss is violent enough to take spectacles off a face — the
+    // mechanism is being knocked about, not the pressure itself acting on
+    // the lens, which is nowhere near strong enough to matter.
+    blastWave: (impulseNs, dist) => {
+      if(!vision || !playing) return;
+      if(vision.blast(impulseNs)) ui.toast('Your glasses are gone — off your face and over the side.', 'bad');
+      if(dist < 120) vision.flash(THREE.MathUtils.clamp(1.6 - dist/120, 0, 1.4));
+    },
   });
 
   creative = new Creative({ scene, camera, field, world, player, ocean, sky, strikes, fleet, gulls, ui, gov });
@@ -454,7 +462,8 @@ function updateCardio(dt){
   cardio.update(dt, {
     exertion: THREE.MathUtils.clamp((player.speed || 0)/(sw ? 2.4 : 5.4), 0, 1)
               * (input.sprint ? 1 : 0.75),
-    fear: mode.hostile ? 0.45 + (strikes && strikes.flash > 0.1 ? 0.5 : 0) : 0,
+    fear: (mode.hostile ? 0.45 + (strikes && strikes.flash > 0.1 ? 0.5 : 0) : 0)
+          + (strikes ? strikes.effects.fear : 0),
     health: survival ? survival.health : 100,
     water: survival ? survival.water : 100,
     food: survival ? survival.food : 100,
@@ -464,7 +473,10 @@ function updateCardio(dt){
     breath: player.breath ?? 1,
     decay: mode.decay || 1,
     // heat stress steals from central circulation; cold drives shivering
-    heatStrain: atmos ? atmos.strain.cardio : 0,
+    // Radiant heat and airway irritation are both real cardiac loads.
+    heatStrain: Math.max(atmos ? atmos.strain.cardio : 0,
+                         strikes ? strikes.effects.heatStrain : 0),
+    bleeding: strikes ? strikes.effects.burn*0.5 : 0,
     coldExposure: atmos ? atmos.strain.coldExposure : 0,
   });
 }
@@ -487,6 +499,13 @@ function updateVision(dt){
   u.uBlur.value = v.uBlur; u.uDroplets.value = v.uDroplets;
   u.uFog.value = v.uFog;   u.uSalt.value = v.uSalt;
   u.uScratches.value = v.uScratches; u.uDazzle.value = v.uDazzle;
+  // Streaming eyes are not lens grime — they blur the image whether or
+  // not anything is being worn, so this rides on top of the lens model.
+  if(strikes){
+    const irr = strikes.effects.eyeIrritation;
+    u.uBlur.value = Math.max(u.uBlur.value, irr*2.6);
+    u.uFog.value = Math.min(1, u.uFog.value + strikes.effects.veil*0.55);
+  }
   u.uLensSeed.value = v.uLensSeed;
   u.uExposureMul.value = v.uExposureMul; u.uSatMul.value = v.uSatMul;
   if(v.uColourMatrix) u.uColourMatrix.value.fromArray(v.uColourMatrix);
@@ -871,7 +890,16 @@ function frame(){
 
   /* ── ordnance ───────────────────────────────────────────── */
   if(strikes && simDt > 0){
-    strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip, player ? player.pos : focus, wind);
+    strikes.update(simDt, playerShip ? playerShip.pos : focus, playerShip,
+      player ? player.pos : focus, wind, {
+        submerged: !!(player && player.state === 'swim'
+                      && player.pos.y + 1.4 < field.height(player.pos.x, player.pos.z)),
+        rain: storm > 0.4 ? (storm-0.4)*1.6 : 0,
+        washing: playerShip ? THREE.MathUtils.clamp((playerShip.submersion||0)-0.55, 0, 1)*storm : 0,
+      });
+    // Coughing and burns cost you the ability to work the boat.
+    if(player) player.effort = THREE.MathUtils.clamp(
+      strikes.effects.exertionCap*(1 - strikes.effects.burn*0.45), 0.3, 1);
   }
 
   /* ── the thing that keeps pace ──────────────────────────── */

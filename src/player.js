@@ -95,6 +95,9 @@ export class Player {
     this.bob = 0; this.stride = 0;
     this.breath = 1;                              // 0..1 lungs, matters when swimming
     this.stamina = 1;
+    // Whole-body work capacity, 0..1. Driven down by things that stop a
+    // person hauling on a rope — coughing, burns, exhaustion.
+    this.effort = 1;
     this.ship = null;
     this.body = buildBody();
     this.body.root.visible = false;
@@ -182,7 +185,7 @@ export class Player {
     const standing = this.local.y <= deckY + 0.02;
 
     const dir = this.moveDir(input, this.yaw);
-    const walk = input.sprint ? 5.4 : 2.9;
+    const walk = (input.sprint ? 5.4 : 2.9)*this.effort;
     const control = standing ? 1 : 0.18;
 
     // your legs push you along the deck; the deck's tilt and surges push back
@@ -233,7 +236,7 @@ export class Player {
     const submerged = THREE.MathUtils.clamp((surface - this.pos.y)/1.7, 0, 1);
 
     const dir = this.moveDir(input, this.yaw);
-    const swim = input.sprint && this.stamina > 0.05 ? 3.0 : 1.55;
+    const swim = (input.sprint && this.stamina > 0.05 ? 3.0 : 1.55)*this.effort;
     if(input.sprint && dir.lengthSq() > 0) this.stamina = Math.max(0, this.stamina - dt*0.22);
     else this.stamina = Math.min(1, this.stamina + dt*0.10);
 
@@ -269,7 +272,7 @@ export class Player {
 
   updateLand(dt, input){
     const dir = this.moveDir(input, this.yaw);
-    const walk = input.sprint && this.stamina > 0.02 ? 6.2 : 3.3;
+    const walk = (input.sprint && this.stamina > 0.02 ? 6.2 : 3.3)*this.effort;
     if(input.sprint && dir.lengthSq() > 0) this.stamina = Math.max(0, this.stamina - dt*0.16);
     else this.stamina = Math.min(1, this.stamina + dt*0.13);
 

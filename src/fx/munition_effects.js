@@ -84,8 +84,24 @@ function burnSeverity(tdu){
    while σh runs away. */
 const SIGMA_H0 = 6;      // m, at burst
 const SIGMA_Z0 = 3;      // m
-const GROW_H   = 1.35;   // m/s of horizontal spread
-const GROW_Z   = 0.34;   // m/s of vertical spread — deliberately much slower
+/* Spread rates. Pasquill-Gifford neutral (class D) puts σy at roughly
+   8% of travel distance at short range, so a puff riding a 6 m/s wind
+   widens at something under half a metre per second — an order slower
+   than it looks like it should from the drawn cloud, which is why a
+   cloud stays dangerous long after it has stopped looking dense. σz is
+   smaller again for a release that starts at the surface. */
+const GROW_H   = 0.42;   // m/s
+const GROW_Z   = 0.13;   // m/s
+
+/* Concentration is reported in units of "the middle of a puff ten
+   seconds after it opens" — a real time to be caught by one. Everything
+   below is calibrated against that reference rather than any physical
+   measure, because the agent is invented. */
+const CONC_REF_T = 10;
+const CONC_UNIT = 1/(
+  (SIGMA_H0*SIGMA_H0*SIGMA_Z0) /
+  ((SIGMA_H0 + GROW_H*CONC_REF_T)*(SIGMA_H0 + GROW_H*CONC_REF_T)*(SIGMA_Z0 + GROW_Z*CONC_REF_T))
+);
 
 /* Concentration in arbitrary "units", normalised so that standing in the
    centre of a fresh puff reads about 1.0. Everything downstream is
@@ -95,7 +111,7 @@ function puffConcentration(h, dx, dy, dz){
   const sh = SIGMA_H0 + GROW_H*t;
   const sz = SIGMA_Z0 + GROW_Z*t;
   // conserved mass: peak ∝ 1/(σh² σz), referenced to the burst geometry
-  const peak = (SIGMA_H0*SIGMA_H0*SIGMA_Z0)/(sh*sh*sz);
+  const peak = CONC_UNIT*(SIGMA_H0*SIGMA_H0*SIGMA_Z0)/(sh*sh*sz);
   const r2 = dx*dx + dz*dz;
   // the puff's own centre lifts slowly off the water as it warms and expands
   const centreY = (h.rise != null ? h.rise : 9)*smooth01(t/45);

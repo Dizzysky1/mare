@@ -3,7 +3,8 @@ import { Flyover } from './fx/flyover.js';
 import { buildBomb, setFins } from './fx/ordnance.js';
 import { Blast } from './fx/blast.js';
 import { HazardFX } from './fx/munition_vfx.js';
-import { munition } from './fx/munitions.js';
+import { munition, loadoutForWave } from './fx/munitions.js';
+import { MunitionEffects } from './fx/munition_effects.js';
 import { stream } from './rng.js';
 
 /* Contested waters. Flight, stores and blast visuals live in focused
@@ -12,7 +13,9 @@ import { stream } from './rng.js';
 
 const G = 9.81;
 const FORWARD = new THREE.Vector3(0, 0, 1);
-const storeKind = index => index%3 === 2 ? 'gbu12' : 'mk83';
+// A near-surface cloud is carried at roughly two thirds of the wind
+// measured at mast height — it drags on the water it sits on.
+const CLOUD_DRIFT = 0.66;
 
 export class Strikes {
   constructor(scene, field, audio, cb = {}){
@@ -22,7 +25,11 @@ export class Strikes {
     this.interval = 95;
     this.wave = 0;
     this.bombs = [];
-    this.storeKinds = Array.from({ length:6 }, (_, i) => storeKind(i));
+    // Replaced each sortie by loadoutForWave(); this is only the opener.
+    this.storeKinds = loadoutForWave(1).slice();
+    // Set to an array to pin the next sortie's load (creative mode does
+    // this); left null, each sortie picks its own for the wave.
+    this.forceKinds = null;
     this.releaseKinds = [];
     this.flash = 0;
 
@@ -31,7 +38,13 @@ export class Strikes {
     // around and a cloud has to be got upwind of, long after the bang.
     this.hazardFX = new HazardFX(scene, field);
     this.hazards = [];
+    // Fire and cloud are drawn by HazardFX and made consequential here.
+    this.effects = new MunitionEffects({
+      toast: (t, k) => this.cb.toast?.(t, k),
+      damage: (n, why) => this.cb.damage?.(n, why),
+    });
     this._wind = new THREE.Vector3();
+    this._allHaz = [];
     this.flyover = new Flyover(scene, {
       audio,
       makeStore: (index) => {
@@ -75,6 +88,7 @@ export class Strikes {
     this.bombs.length = 0;
     this.releaseKinds.length = 0;
     this.hazards.length = 0;
+    this.effects.reset();
     for(const m of this.markers){
       m.live = false; m.released = false; m.impact = null;
       m.mesh.visible = false;
@@ -86,6 +100,12 @@ export class Strikes {
     const rng = stream('strikes');
     const count = Math.min(5, 1 + Math.floor(this.wave/2) + (rng.chance(0.4) ? 1 : 0));
     const heading = rng.next()*Math.PI*2;
+    // What this aircraft is carrying today. Later waves reach for the
+    // stores that leave something behind, so reading which one is coming
+    // down — and it looks different falling — starts to matter.
+    this.storeKinds = (this.forceKinds && this.forceKinds.length)
+      ? this.forceKinds.slice()
+      : loadoutForWave(this.wave, () => rng.next()).slice();
 
     // Lead modestly. The long visible run-in is warning, not a perfect
     // prediction of a manoeuvring boat, so moving promptly still matters.
@@ -142,9 +162,18 @@ export class Strikes {
       this.cb.toast?.('Something is coming down. Get out from under it.', 'bad');
   }
 
-  update(dt, target, ship, playerPos, wind){
+  update(dt, target, ship, playerPos, wind, env = {}){
     this.blast.update(dt, playerPos);
     this.updateHazards(dt, playerPos, wind);
+    // Anything spawned straight into HazardFX (creative mode) is just as
+    // dangerous as anything a bomb left — one list, no special cases.
+    this._allHaz.length = 0;
+    for(const h of this.hazards) this._allHaz.push(h);
+    for(const h of this.hazardFX._manual) this._allHaz.push(h);
+    this.effects.update(dt, {
+      hazards: this._allHaz, playerPos, ship, wind,
+      submerged: !!env.submerged, rain: env.rain || 0, washing: env.washing || 0,
+    });
     this.flash = this.blast.flash;
     this.updateMarkers(dt);
 
@@ -170,6 +199,13 @@ export class Strikes {
       if(h.age >= h.ttl) this.hazards.splice(i, 1);
     }
     if(wind) this._wind.set(wind.x, 0, wind.z);
+    // The cloud goes where the wind goes; the fire is on the water and
+    // stays put. This is what makes "get upwind of it" a real answer.
+    for(const h of this.hazards){
+      if(h.type !== 'cloud') continue;
+      h.point.x += this._wind.x*CLOUD_DRIFT*dt;
+      h.point.z += this._wind.z*CLOUD_DRIFT*dt;
+    }
     this.hazardFX.update(dt, this.hazards, playerPos, this._wind);
   }
 
@@ -260,6 +296,10 @@ export class Strikes {
       if(force) ship.impulse(force, point);
     }
     if(d < 90) this.cb.shake?.(THREE.MathUtils.clamp(1-d/90, 0, 1));
+    // Specific impulse on a person, in N·s. Deliberately a simple tuned
+    // falloff rather than a weapons-effects fit: what it is for is
+    // deciding whether the blast takes your spectacles off your face.
+    if(d < 220) this.cb.blastWave?.(power*2600/Math.pow(Math.max(d, 6), 1.5), d);
     if(d < 55) this.cb.damage?.(THREE.MathUtils.clamp(1-d/55, 0, 1)*95,
       'A near miss. The water hit you like a wall.');
     if(d < 16) this.cb.damage?.(200, 'You were where it landed.');
