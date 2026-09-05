@@ -37,7 +37,8 @@ export class Survival {
     let msg = null;
 
     this.food = Math.max(0, this.food - d*0.078*(ctx.exerting ? 1.7 : 1));
-    this.water = Math.max(0, this.water - d*0.100*(ctx.hot ? 1.35 : 1)*(ctx.exerting ? 1.5 : 1));
+    this.water = Math.max(0, this.water - d*0.100*(ctx.hot ? 1.35 : 1)*(ctx.exerting ? 1.5 : 1)
+                          *(ctx.dehydration ?? 1));
     this.vitamin = Math.max(0, this.vitamin - d*0.030);
 
     // sanity: the sea takes it, land and company give it back. Weighted so

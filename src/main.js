@@ -11,6 +11,8 @@ import { Post } from './post.js';
 import { Strikes } from './strikes.js';
 import { Chart } from './chart.js';
 import { Cardio } from './physiology.js';
+import { Weather } from './weather.js';
+import { Atmosphere } from './atmosphere.js';
 import { UI } from './ui.js';
 import { Audio } from './audio.js';
 
@@ -20,27 +22,27 @@ const MODES = {
   easy: {
     key:'easy', name:'Drift', spectator:true, survival:false, dayCycle:false,
     hour:16.6, swell:0.78, windDeg:38, windSpeed:6.0, storm:0, chop:0.95,
-    boats:7, gulls:90, dayLen:0,
+    boats:7, gulls:90, dayLen:0, storminess:0.04, stormMin:0, stormMax:0.12,
   },
   medium: {
     key:'medium', name:'Deckhand', spectator:false, survival:false, dayCycle:true,
     hour:9.2, swell:1.05, windDeg:38, windSpeed:7.5, storm:0.04, chop:1.05,
-    boats:6, gulls:80, dayLen:2400,
+    boats:6, gulls:80, dayLen:2400, storminess:0.14, stormMin:0, stormMax:0.35,
   },
   hard: {
     key:'hard', name:'Passage', spectator:false, survival:true, hard:true, decay:1,
     dayCycle:true, hour:6.4, swell:1.55, windDeg:52, windSpeed:9.5, storm:0.12, chop:1.15,
-    boats:4, gulls:55, dayLen:1500,
+    boats:4, gulls:55, dayLen:1500, storminess:0.32, stormMin:0.02, stormMax:0.62,
   },
   insane: {
     key:'insane', name:'The unwelcoming side', spectator:false, survival:true, hard:true, decay:2.0,
     dayCycle:true, hour:19.6, swell:3.9, windDeg:200, windSpeed:18.0, storm:0.88, chop:1.35,
-    boats:1, gulls:12, dayLen:1100, hostile:true,
+    boats:1, gulls:12, dayLen:1100, hostile:true, storminess:0.88, stormMin:0.55, stormMax:1,
   },
   insanePlus: {
     key:'insanePlus', name:'Contested waters', spectator:false, survival:true, hard:true, decay:2.3,
     dayCycle:true, hour:18.2, swell:3.6, windDeg:200, windSpeed:17.0, storm:0.72, chop:1.35,
-    boats:1, gulls:10, dayLen:1100, hostile:true, strikes:true, strikeInterval:88,
+    boats:1, gulls:10, dayLen:1100, hostile:true, strikes:true, strikeInterval:88, storminess:0.74, stormMin:0.45, stormMax:0.95,
   },
 };
 
@@ -302,6 +304,19 @@ function startMode(key){
   sky.uniforms.uWindDir.value.set(Math.cos(wr), Math.sin(wr));
   elapsed = 0;
 
+  weather = new Weather({
+    seed: 1337 + Object.keys(MODES).indexOf(mode.key),
+    climate: mode.hostile ? 'hostile' : 'mediterranean',
+    storminess: mode.storminess ?? mode.storm,
+    windDeg: mode.windDeg, windSpeed: mode.windSpeed,
+  });
+  atmos = new Atmosphere({
+    climate: mode.hostile ? 'hostile' : 'mediterranean',
+    seaTempC: mode.hostile ? 11 : 24.5,
+    seed: 4242,
+  });
+  lastHs = mode.swell;
+
   // clear the old fleet
   for(const b of fleet.boats){ scene.remove(b.group); scene.remove(b.spray); }
   fleet.boats.length = 0;
@@ -356,6 +371,47 @@ function startMode(key){
     : 'You are aboard. Something on deck should explain why.', 'dim');
 }
 
+/* ── the sky's mood, and the air in it ──────────────────────── */
+let weather = null, atmos = null;
+let lastHs = 0;
+
+/* The sea does not answer the wind instantly, so the wave field is
+   re-cut only when the weather's significant wave height has actually
+   drifted — rebuilding the spectrum every frame would be wasted work
+   and would fight the model's own fetch/duration lag. */
+function updateWeather(dt){
+  weather.update(dt, { hour, elapsed, nearLand: nearLandFactor(), latitudeish: 0.5 });
+  atmos.update(dt, {
+    hour, weather,
+    playerWet: player ? (player.state === 'swim' ? 1 : player.wet || 0) : 0,
+    exertion: player && input.sprint && player.speed > 1 ? 0.7 : 0.15,
+    nearLand: nearLandFactor(),
+  });
+
+  // Keep each mode recognisably itself: weather may roam, but only inside
+  // the band that mode promised on the menu card.
+  storm = THREE.MathUtils.clamp(weather.storm, mode.stormMin ?? 0, mode.stormMax ?? 1);
+
+  windSpeed = weather.windSpeed + weather.gust*0.4;
+  wind.set(Math.cos(weather.windDir), 0, Math.sin(weather.windDir)).multiplyScalar(windSpeed);
+  sky.uniforms.uWindDir.value.set(Math.cos(weather.windDir), Math.sin(weather.windDir));
+
+  const hs = THREE.MathUtils.clamp(weather.seaState.hs, mode.swell*0.45, mode.swell*1.45);
+  if(Math.abs(hs - lastHs) > Math.max(0.06, lastHs*0.07)){
+    lastHs = hs;
+    field.configure({ swell:hs, windDeg:weather.windDir*180/Math.PI,
+                      chop:mode.chop, count:tier.waves });
+    ocean.syncSpectrum();
+  }
+}
+
+/* 0 well offshore, 1 close in — drives the thermal land breeze. */
+function nearLandFactor(){
+  if(!world || !player) return 0;
+  const n = world.nearest(player.pos.x, player.pos.z);
+  return THREE.MathUtils.clamp(1 - n.dist/1200, 0, 1);
+}
+
 /* ── the body ───────────────────────────────────────────────── */
 const cardio = new Cardio();
 
@@ -376,6 +432,9 @@ function updateCardio(dt){
     faceInWater: sw && player.pos.y + 1.5 < surf,
     breath: player.breath ?? 1,
     decay: mode.decay || 1,
+    // heat stress steals from central circulation; cold drives shivering
+    heatStrain: atmos ? atmos.strain.cardio : 0,
+    coldExposure: atmos ? atmos.strain.coldExposure : 0,
   });
 }
 
@@ -606,11 +665,7 @@ function frame(){
   if(mode.dayLen > 0 && playing) hour = (hour + simDt*24/mode.dayLen) % 24;
 
   // weather drifts, and in the hostile sea it never really lets up
-  if(playing && mode.hostile){
-    storm = 0.72 + 0.26*Math.sin(elapsed*0.03) + 0.02*Math.sin(elapsed*0.31);
-  } else if(playing && mode.key === 'hard'){
-    storm = THREE.MathUtils.clamp(0.10 + 0.32*Math.sin(elapsed*0.012 + 2.0), 0, 0.55);
-  }
+  if(playing && weather) updateWeather(simDt);
   /* ── camera ─────────────────────────────────────────────── */
   if(state === 'menu'){
     menuT += dt;
@@ -673,6 +728,8 @@ function frame(){
       boatNear,
       gullNear: false,
       hot: sunInfo.elevation > 0.5 && storm < 0.3,
+      // a hot dry wind takes far more out of you than a cool damp calm
+      dehydration: atmos ? atmos.strain.dehydrationRate : 1,
       exerting: input.sprint && player.speed > 1,
       drowning: player.state === 'swim' && player.breath <= 0.01,
       cold: player.state === 'swim' && !!mode.hostile,
@@ -814,4 +871,5 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get fleet(){return fleet;}, get world(){return world;},
   get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
   get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;}, cardio,
+  get weather(){return weather;}, get atmos(){return atmos;},
   get hour(){return hour;}, set hour(v){hour = v;} };
