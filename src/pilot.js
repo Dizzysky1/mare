@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Aircraft } from './fx/aircraft.js';
 import { Ship } from './boats.js';
+import { GUN, DROP_INTERVAL } from './weapons.js';
+import { munition } from './fx/munitions.js';
 
 /* ────────────────────────────────────────────────────────────────
    The other seat.
@@ -82,6 +84,10 @@ export class Pilot {
     this._q = new THREE.Quaternion();
 
     this.dead = false;
+    this.gunAmmo=GUN.ammo; this._gunCooldown=0; this._dropCooldown=0; this.zoom=false;
+    this.onGun=opts.onGun || (()=>{});
+    this._baseFov=this.camera.fov;
+    this.lookYaw=0; this.lookPitch=0; this._viewEuler=new THREE.Euler(0,0,0,'YXZ');
     this.cause = '';
     this._lastAlt = this.ac.pos.y;
 
@@ -99,6 +105,11 @@ export class Pilot {
      WASD is the stick, not a movement vector: W/S is pitch, A/D is roll.
      Q/R is the rudder, Space/Ctrl is the throttle, F releases. */
   applyInput(input, dt, keys){
+    this._dropCooldown=Math.max(0,this._dropCooldown-dt);
+    this._gunCooldown=Math.max(0,this._gunCooldown-dt);
+    this.zoom=!!keys?.zoom;
+    if(!input.slow){ this.lookYaw*=Math.exp(-dt*10); this.lookPitch*=Math.exp(-dt*10); }
+    if(keys?.gun) this.fireGun();
     const rate = 2.6, centre = 3.4;
     const towards = (cur, want) => {
       if(want !== 0) return THREE.MathUtils.clamp(cur + want*rate*dt, -1, 1);
@@ -128,12 +139,31 @@ export class Pilot {
   }
 
   release(){
-    if(this.dead) return null;
+    if(this.dead || this._dropCooldown>0 || !this.session?.net.connected) return null;
+    this.session.sendJet(this.ac,this.controls.burner,true);
     const rel = this.ac.release();
     if(!rel){ this.onToast('Pylons empty. Nothing left to drop.', 'bad'); return null; }
-    this.session?.sendDrop(rel);
+    if(!this.session.sendDrop(rel)){
+      this.ac._remaining.unshift(rel.munitionId); this.ac._releaseIndex--;
+      this.ac.storesCount=this.ac._remaining.length;
+      this.ac.storesMass+=munition(rel.munitionId).mass;
+      this.ac.mass=this.ac.emptyMass+this.ac.fuel+this.ac.storesMass;
+      return null;
+    }
+    this._dropCooldown=DROP_INTERVAL;
     this.onToast(`Away — ${this.ac.storesCount} left.`, '');
     return rel;
+  }
+
+  fireGun(){
+    if(this.dead || this._gunCooldown>0 || this.gunAmmo<GUN.burst || !this.session?.net.connected) return false;
+    this._fwd.set(0,0,1).applyQuaternion(this.ac.quat);
+    const p=this.ac.pos.clone().addScaledVector(this._fwd,8).toArray();
+    const v=this.ac.vel.clone().addScaledVector(this._fwd,GUN.speed).toArray();
+    this.session.sendJet(this.ac,this.controls.burner,true);
+    if(!this.session.sendGun(p,v)) return false;
+    this.gunAmmo-=GUN.burst; this._gunCooldown=GUN.interval;
+    this.onGun(p,v); return true;
   }
 
   setAltimeter(hPa){
@@ -142,6 +172,10 @@ export class Pilot {
   }
 
   toggleView(){ this.view = this.view === 'cockpit' ? 'chase' : 'cockpit'; }
+  look(dx,dy,sensitivity){
+    this.lookYaw=THREE.MathUtils.clamp(this.lookYaw-dx*sensitivity,-1.7,1.7);
+    this.lookPitch=THREE.MathUtils.clamp(this.lookPitch+dy*sensitivity,-1.1,1.1);
+  }
 
   update(dt, ctx = {}){
     if(!this.dead){
@@ -237,6 +271,11 @@ export class Pilot {
   }
 
   _camera(dt){
+    const fov=this.zoom ? 32 : this._baseFov;
+    if(Math.abs(this.camera.fov-fov)>0.01){
+      this.camera.fov=THREE.MathUtils.lerp(this.camera.fov,fov,Math.min(1,dt*12));
+      this.camera.updateProjectionMatrix();
+    }
     const ac = this.ac;
     ac.group.updateMatrixWorld(true);
     this._fwd.set(0,0,1).applyQuaternion(ac.quat);
@@ -256,7 +295,8 @@ export class Pilot {
       ac.group.visible = true;
     }
     this.camera.position.lerp(this._camPos, Math.min(1, dt*18));
-    this._look.copy(ac.pos).addScaledVector(this._fwd, 260);
+    this._viewEuler.set(this.lookPitch,this.lookYaw,0);
+    this._look.set(0,0,1).applyEuler(this._viewEuler).applyQuaternion(ac.quat).multiplyScalar(260).add(ac.pos);
     this.camera.up.copy(this._up);
     this.camera.lookAt(this._look);
   }
@@ -273,6 +313,7 @@ export class Pilot {
       fuel: Math.max(0, Math.round(this.ac.fuel)),
       fuelPct: THREE.MathUtils.clamp(this.ac.fuel/this.ac.fuelCapacity, 0, 1),
       stores: this.ac.storesCount,
+      nextStore:this.ac._remaining[0] || 'empty', gunAmmo:this.gunAmmo, zoom:this.zoom,
       g: i.g, aoa: i.aoa,
       trim: this.controls.trim,
       stalled: this.ac.stalled,
@@ -285,6 +326,7 @@ export class Pilot {
   }
 
   dispose(){
+    this.camera.fov=this._baseFov; this.camera.updateProjectionMatrix(); this.camera.up.set(0,1,0);
     try { this.scene.remove(this.ac.group); } catch {}
     for(const h of this._hulls){
       try { this.scene.remove(h.group); if(h.spray) this.scene.remove(h.spray); } catch {}

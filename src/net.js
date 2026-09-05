@@ -48,6 +48,7 @@ async function pack(obj){
 }
 
 async function unpack(code){
+  if(typeof code !== 'string' || code.length>32768) throw new Error('That link code is too large.');
   const trimmed = String(code || '').trim().replace(/\s+/g, '');
   if(trimmed.length < 2) throw new Error('That code is too short to be a MARE link.');
   const flag = trimmed[0];
@@ -60,8 +61,16 @@ async function unpack(code){
   for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   if(flag === 'z'){
     const ds = new DecompressionStream('deflate-raw');
-    const w = ds.writable.getWriter(); w.write(bytes); w.close();
-    bytes = new Uint8Array(await new Response(ds.readable).arrayBuffer());
+    const w = ds.writable.getWriter(); w.write(bytes).catch(()=>{}); w.close().catch(()=>{});
+    const reader=ds.readable.getReader(), chunks=[]; let size=0;
+    while(true){
+      const {value,done}=await reader.read(); if(done) break;
+      size+=value.length;
+      if(size>65536){ await reader.cancel(); throw new Error('That link code expands to too much data.'); }
+      chunks.push(value);
+    }
+    bytes=new Uint8Array(size); let offset=0;
+    for(const chunk of chunks){ bytes.set(chunk,offset); offset+=chunk.length; }
   }
   try { return JSON.parse(new TextDecoder().decode(bytes)); }
   catch { throw new Error('That code is damaged — it did not decode to anything readable.'); }
@@ -138,11 +147,13 @@ export class Net {
       if(this.connected){ this.connected = false; this.onClose?.('channel closed'); }
     });
     ch.addEventListener('message', e => {
+      if(typeof e.data !== 'string' || e.data.length>16384) return;
       this._winIn += (typeof e.data === 'string' ? e.data.length : e.data.byteLength || 0);
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
-      if(msg.t === '__ping'){ this.send('__pong', { at: msg.at }, true); return; }
-      if(msg.t === '__pong'){ this.rtt = performance.now() - msg.p.at; return; }
+      if(!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
+      if(msg.t === '__ping'){ if(Number.isFinite(msg.p?.at)) this.send('__pong', { at: msg.p.at }, true); return; }
+      if(msg.t === '__pong'){ if(Number.isFinite(msg.p?.at)) this.rtt = performance.now() - msg.p.at; return; }
       this.onMessage?.(msg.t, msg.p);
     });
   }

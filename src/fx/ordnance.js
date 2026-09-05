@@ -24,6 +24,7 @@ import * as THREE from 'three';
 export const KINDS = ['mk82', 'mk83', 'gbu12', 'napalm', 'gas', 'cluster', 'cluster_gas'];
 
 const SPEC = {
+  nuke: {length:3.2,calibre:0.6,bodyColor:0xc9c4b2,bandColor:0x393b36,stripeColor:0xffbb33,finScale:1.1},
   mk82:  { length:2.20, calibre:0.27, bodyColor:0x41483a, bandColor:0x737866, stripeColor:0xaa8c2c, finScale:1.00 },
   mk83:  { length:3.00, calibre:0.36, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.05 },
   gbu12: { length:3.30, calibre:0.27, bodyColor:0x353b3e, bandColor:0x6b706b, stripeColor:0xaa8c2c, finScale:1.30, seeker:true, wings:true },

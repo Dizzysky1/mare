@@ -19,6 +19,11 @@ export const FAMILIES = {
 };
 
 export const MUNITIONS = {
+  nuke: {
+    id:'nuke', name:'Nuclear store', family:'he', nuclear:true,
+    mass:500, calibre:0.6, length:3.2, Cd:0.4, fuze:'impact',
+    blast:{power:3, lethalR:180, woundR:700, shockR:2200}, audio:{boom:2},
+  },
   mk82: {
     id:'mk82', name:'Mk 82', family:'he',
     mass: 227, calibre: 0.273, length: 2.21,

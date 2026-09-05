@@ -58,7 +58,9 @@ export class Ocean {
 
     const packed = field.pack();
     this.uniforms = Object.assign({}, env, {
+      uTime:{value:field.time},
       uWaveA:{ value: packed.A }, uWaveB:{ value: packed.B },
+      uTsunami:{value:field.tsunami},
       uCamPos:{ value: new THREE.Vector3() },
       uIsl:{ value: islands },
       uIslPeak:{ value: peaks },
@@ -146,7 +148,7 @@ export class Ocean {
            for the shadows they throw across the water.            */
 
         float seaH(vec2 p, float t){          // long waves only — enough for a ray
-          float y = 0.0;
+          float y = tsunamiHeight(p,t);
           for(int i=0;i<NW;i++){
             if(i > 9) break;
             y += uWaveA[i].z*sin(uWaveA[i].w*dot(uWaveA[i].xy,p) - uWaveB[i].x*t + uWaveB[i].z);
@@ -381,6 +383,8 @@ export class Ocean {
   }
 
   update(camera, viewHeightPx){
+    // Buoyancy and rendered waves must share a clock, including after pause.
+    this.uniforms.uTime.value=this.field.time;
     // snap the disc to a 2m grid so vertices don't crawl under the camera
     this.mesh.position.set(Math.round(camera.position.x/2)*2, 0, Math.round(camera.position.z/2)*2);
     this.uniforms.uCamPos.value.copy(camera.position);

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MARE multiplayer checks</title>
+<style>body{background:#10232d;color:#eef;font:14px system-ui;margin:32px}pre{white-space:pre-wrap}button{padding:10px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"}}</script>
+<h1>MARE multiplayer checks</h1>
+<button id="run">Run checks</button><pre id="report">Ready.</pre>
+<script type="module">
+const button=document.querySelector('#run'),report=document.querySelector('#report');
+button.onclick=async()=>{
+  button.disabled=true;report.textContent='Running…';
+  try{
+    const results={};
+    for(const name of ['flight','plume','clusters','integration','shore','multiplayer']){
+      const m=await import(`./${name}.mjs`);
+      results[name]=m[`${name==='clusters'?'cluster':name}Checks`]();
+    }
+    const {inviteChecks}=await import('./multiplayer.mjs'); results.invites=await inviteChecks();
+    report.textContent='PASS\n'+JSON.stringify(results,null,2);
+  }catch(e){report.textContent='FAIL\n'+e.stack;}finally{button.disabled=false;}
+};
+</script>
+</html>

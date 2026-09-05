@@ -39,6 +39,7 @@ export class WaveField {
     this.activeCount = this.count;
     this.waves = [];
     this.time = 0;
+    this.tsunami = new THREE.Vector4(0,0,-1000,0);
     this.windDir = new THREE.Vector2(1,0.35).normalize();
     this.configure({ swell: 1.0, windDeg: 38 });
   }
@@ -121,7 +122,7 @@ export class WaveField {
 
   /* Vertical displacement only — enough for cheap probes (birds, spray, splashes). */
   height(x, z, t = this.time){
-    let y = 0;
+    let y = this.tsunamiHeight(x,z,t);
     for(let i = 0; i < this.waves.length; i++){
       const v = this.waves[i];
       y += v.amp*Math.sin(v.k*(v.dx*x + v.dz*z) - v.w*t + v.phase);
@@ -147,6 +148,10 @@ export class WaveField {
       bx += -v.Q*v.dx*v.dz*WA*s;  by += v.dz*WA*c;  bz += -v.Q*v.dz*v.dz*WA*s;
       vx += QA*v.dx*v.w*s;  vy += -v.amp*v.w*c;  vz += QA*v.dz*v.w*s;
     }
+    dy += this.tsunamiHeight(x,z,t);
+    ty += (this.tsunamiHeight(x+0.5,z,t)-this.tsunamiHeight(x-0.5,z,t));
+    by += (this.tsunamiHeight(x,z+0.5,t)-this.tsunamiHeight(x,z-0.5,t));
+    vy += (this.tsunamiHeight(x,z,t+0.01)-this.tsunamiHeight(x,z,t-0.01))/0.02;
     let nx = by*tz - bz*ty, ny = bz*tx - bx*tz, nz = bx*ty - by*tx;
     const l = Math.hypot(nx,ny,nz) || 1;
     out.y = dy; out.dx = dxs; out.dz = dzs;
@@ -172,6 +177,14 @@ export class WaveField {
     return { A, B };
   }
 
+  addTsunami(x,z){ this.tsunami.set(x,z,this.time,22); }
+  clearTsunami(){ this.tsunami.w=0; }
+  tsunamiHeight(x,z,t=this.time){
+    const w=this.tsunami, age=t-w.z;
+    if(w.w===0 || age<0 || age>90) return 0;
+    const radius=age*95, q=(Math.hypot(x-w.x,z-w.y)-radius)/65;
+    return w.w*(1-Math.exp(-age))*Math.exp(-age/35)*(1-q*q)*Math.exp(-0.5*q*q);
+  }
   update(dt){ this.time += dt; }
 }
 
@@ -186,6 +199,13 @@ export const gerstnerGLSL = (n) => /* glsl */`
 #define NW ${n}
 uniform vec4 uWaveA[NW];
 uniform vec4 uWaveB[NW];
+uniform vec4 uTsunami;
+float tsunamiHeight(vec2 p,float t){
+  float age=t-uTsunami.z;
+  if(uTsunami.w==0.0 || age<0.0 || age>90.0) return 0.0;
+  float q=(length(p-uTsunami.xy)-age*95.0)/65.0;
+  return uTsunami.w*(1.0-exp(-age))*exp(-age/35.0)*(1.0-q*q)*exp(-0.5*q*q);
+}
 
 vec3 gerstner(vec2 p, float t, float px, float cut, out vec3 nrm, out float jac){
   vec3 disp = vec3(0.0);
@@ -205,6 +225,9 @@ vec3 gerstner(vec2 p, float t, float px, float cut, out vec3 nrm, out float jac)
     tanX.x += -Q*d.x*d.x*WA*s; tanX.y += d.x*WA*c; tanX.z += -Q*d.x*d.y*WA*s;
     tanZ.x += -Q*d.x*d.y*WA*s; tanZ.y += d.y*WA*c; tanZ.z += -Q*d.y*d.y*WA*s;
   }
+  disp.y += tsunamiHeight(p,t);
+  tanX.y += tsunamiHeight(p+vec2(0.5,0.0),t)-tsunamiHeight(p-vec2(0.5,0.0),t);
+  tanZ.y += tsunamiHeight(p+vec2(0.0,0.5),t)-tsunamiHeight(p-vec2(0.0,0.5),t);
   nrm = normalize(cross(tanZ, tanX));
   jac = tanX.x*tanZ.z - tanX.z*tanZ.x;
   return disp;
