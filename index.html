@@ -59,6 +59,12 @@
         <p>Everything the unwelcoming side has, and somebody else's air force using this stretch of sea as a range. Unmarked fast jets come in low, mark the water, and leave. Read the rings and put the helm over.</p>
         <ul><li>Live ordnance, blast waves, near misses</li><li>Hull takes real impulse from the shock</li><li>Needs decay faster still</li></ul>
       </button>
+
+      <button class="card" data-mode="multi" style="border-color:rgba(232,180,92,.45)">
+        <div class="card-top"><span class="dot" style="background:var(--gold);box-shadow:0 0 8px var(--gold)"></span><h3>Two players</h3><em>Sailor &amp; Pilot</em></div>
+        <p>One on the water, one in the air. Generates a one-click invite link so a friend can click and connect directly.</p>
+        <ul><li>Instant one-click invite link</li><li>Direct peer-to-peer WebRTC</li><li>Human sailor vs human pilot</li></ul>
+      </button>
     </div>
 
     <div class="menu-foot">
@@ -73,7 +79,7 @@
         <label>Sensitivity <input id="opt-sens" type="range" min="20" max="300" value="110"></label>
         <label class="chk"><input id="opt-audio" type="checkbox" checked> Sound</label>
         <button class="btn ghost" id="btn-creative" style="width:auto;margin:0;padding:6px 18px">Creative</button>
-        <button class="btn ghost" id="btn-multi" style="width:auto;margin:0;padding:6px 18px">Two players</button>
+        <button class="btn ghost" id="btn-multi" style="width:auto;margin:0;padding:6px 18px;border-color:rgba(232,180,92,.45);color:var(--gold)">Two players</button>
       </div>
       <div class="keys">
         <b>WASD</b> move · <b>Mouse</b> look · <b>Space</b> jump/up · <b>Shift</b> sprint/down ·
@@ -92,14 +98,14 @@
       <p class="multi-lede">Two people, one stretch of sea. Choose which end of it you are on.</p>
 
       <div class="role-cards">
-        <button class="card role" id="btn-be-sailor">
-          <div class="card-top"><span class="dot d-med"></span><h3>Sail</h3><em>Sailor</em></div>
-          <p>You are on the water. Somewhere above you, a person you cannot see is looking for you among the other boats.</p>
+        <button class="card role" id="btn-be-sailor" style="border-color:rgba(232,180,92,.35)">
+          <div class="card-top"><span class="dot d-med"></span><h3>Sail</h3><em>Host match (Get invite link)</em></div>
+          <p>You are on the water. Generates a shareable invite link for your pilot so they can click and auto-connect.</p>
         </button>
 
         <button class="card role" id="btn-be-pilot">
-          <div class="card-top"><span class="dot d-plus"></span><h3>Fly</h3><em>Pilot</em></div>
-          <p>One aircraft, one tank of fuel, one pass at a time. Nothing on your screen will tell you which boat is the human.</p>
+          <div class="card-top"><span class="dot d-plus"></span><h3>Fly</h3><em>Join match (Enter link/code)</em></div>
+          <p>Join a game: click the invite link your sailor sent you, or paste their invite link or code here.</p>
         </button>
       </div>
 

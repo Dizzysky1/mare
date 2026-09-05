@@ -354,7 +354,10 @@ function buildFollower(){
 
 /* ── menu ───────────────────────────────────────────────────── */
 document.querySelectorAll('#cards .card').forEach(c => {
-  c.addEventListener('click', () => startMode(c.dataset.mode));
+  c.addEventListener('click', () => {
+    if(c.dataset.mode === 'multi') openMulti();
+    else startMode(c.dataset.mode);
+  });
 });
 document.getElementById('opt-quality').addEventListener('change', e => {
   const map = { low:'low', med:'high', high:'max' };

@@ -34,10 +34,9 @@ button{font:inherit;color:inherit}
 .menu-inner{width:min(1220px,94vw);max-height:96vh;display:flex;flex-direction:column;gap:26px;
   padding:24px 0;overflow:auto;scrollbar-width:none}
 .menu-inner::-webkit-scrollbar{display:none}
-.menu-inner header{text-align:center}
-.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-@media(max-width:1240px){.cards{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:1000px){.cards{grid-template-columns:repeat(2,1fr)}}
+.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+@media(max-width:1440px){.cards{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:960px){.cards{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:620px){.cards{grid-template-columns:1fr}.title{letter-spacing:.3em;text-indent:.3em}}
 .card{text-align:left;background:var(--panel);border:1px solid rgba(255,255,255,.10);border-radius:3px;
   padding:18px 18px 16px;cursor:pointer;transition:.22s ease;position:relative;overflow:hidden}
