@@ -539,9 +539,10 @@ export class Blast {
     for(const f of this.foams){
       if(f.mesh.visible) continue;
       f.t = 0;
-      // Keep a faint trace through the ten-second mark; the last seconds are
-      // deliberately subtle, but prevent the impact site vanishing abruptly.
-      f.maxT = 10 + Math.random()*2;
+      // Foam should still be plainly visible around the ten-second mark —
+      // that's the whole point of it lingering — and only fully gone a
+      // few seconds past that.
+      f.maxT = 13 + Math.random()*3;
       f.cx = point.x; f.cy = point.y; f.cz = point.z; f.water = isWater;
       f.radius = (5 + Math.random()*3)*Math.sqrt(power);
       f.mesh.visible = true;
@@ -603,8 +604,8 @@ export class Blast {
       f.t += dt;
       this._deformSurface(f, f.radius, 0.1);
       const grow = Math.min(1, f.t*2.2);
-      const fade = 1 - THREE.MathUtils.clamp((f.t - f.maxT*0.4)/(f.maxT*0.6), 0, 1);
-      f.mesh.material.opacity = 0.5*grow*fade;
+      const fade = 1 - THREE.MathUtils.clamp((f.t - f.maxT*0.55)/(f.maxT*0.45), 0, 1);
+      f.mesh.material.opacity = 0.55*grow*fade;
       if(f.t >= f.maxT) f.mesh.visible = false;
     }
   }

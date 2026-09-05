@@ -886,5 +886,5 @@ window.MARE = { scene, camera, renderer, field, ocean, sky, gov, THREE,
   get strikes(){return strikes;}, get mode(){return mode;}, get state(){return state;},
   get quest(){return quest;}, get survival(){return survival;}, get wind(){return wind;}, cardio,
   get weather(){return weather;}, get atmos(){return atmos;},
-  get runSeed(){return runSeed;}, reseedWorld, worldSeed,
+  get runSeed(){return runSeed;}, reseedWorld, worldSeed, get gulls(){return gulls;},
   get hour(){return hour;}, set hour(v){hour = v;} };
