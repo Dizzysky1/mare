@@ -73,6 +73,15 @@ function liftCoeff(alpha){
 // jet, and full aileron/rudder toward peak rates a real fighter would show
 // (roll ~300deg/s, rudder much weaker than either).
 const CM_ALPHA = 0.85;   // positive: nose-up alpha -> nose-down moment (restoring)
+// Fixed tail/stabilator incidence, rigged for cruise — without it Cpitch=0
+// only at alpha=0, so a hands-off jet would "chase" zero AoA (pitching down
+// to track whatever shallow dive it's already in) instead of holding the
+// small positive AoA that actually balances lift against weight. Real
+// aircraft trim exactly this way: a fixed surface bias that only zeroes the
+// moment at some alpha other than zero. Because q*S*chord factors out of
+// the whole Cpitch sum, this trim alpha (-CM0/CM_ALPHA) is independent of
+// airspeed, same as the real thing.
+const CM0 = -0.033;
 const CM_Q = -14;        // pitch-rate damping
 const CM_DE = -0.40;     // elevator: +pitch input -> nose up
 const CL_BETA = -0.10;   // dihedral effect: restoring roll from sideslip
@@ -328,7 +337,7 @@ export class Aircraft {
     const yawCtrl = clamp(safe(controls?.yaw), -1, 1);
 
     const cmAlphaEff = CM_ALPHA * (1 - STALL_CM_FADE * stallProgress);
-    const Cpitch = cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
+    const Cpitch = CM0 + cmAlphaEff * alpha + CM_Q * qhat + CM_DE * pitchCtrl;
     const Croll = CL_BETA * beta + CL_P * phat + CL_DA * rollCtrl;
     const Cyaw = CN_BETA * beta + CN_R * rhat + CN_DR * yawCtrl + STALL_YAW_COUPLE * stallProgress * phat;
 

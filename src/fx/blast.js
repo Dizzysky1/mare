@@ -22,6 +22,14 @@ import * as THREE from 'three';
 
 const G = 9.81;
 
+/* ease curve for fade-in/out — a linear ramp pops in/out with a visible
+   "edge"; smoothstep's flat tangents at 0 and 1 read as continuous instead
+   of mechanical. Cheap (one multiply-add extra) so it's used everywhere. */
+export function smooth01(x){
+  x = x < 0 ? 0 : x > 1 ? 1 : x;
+  return x*x*(3 - 2*x);
+}
+
 /* soft round sprite, drawn with a tiny shader so size/opacity/colour can
    vary per-particle without one draw call each. Exported so munition_vfx.js
    (fire/cloud hazards) can share the same pool machinery instead of
@@ -174,6 +182,10 @@ function makeParticle(){
     r: 1, g: 1, b: 1, r1: 1, g1: 1, b1: 1, coolTime: 1,
     grav: G, drag: 0, hug: 0, water: true, groundY: 0,
     turb: 0, tPhase: 0,
+    // baked once at spawn: a per-particle brightness/opacity jitter so a
+    // few hundred droplets don't all fade on the exact same curve — that
+    // uniformity is a big part of what reads as "cheap particle system".
+    jit: 1,
   };
 }
 
@@ -200,9 +212,9 @@ export class Blast {
     // Sized for ~5 overlapping detonations at their heaviest stage at once
     // (see the per-shot counts below); comfortably more than the old ~1600
     // total, still three draw calls.
-    this.flashN = opts.flashParticles || 500;
-    this.bodyN = opts.bodyParticles || 3600;
-    this.mistN = opts.mistParticles || 1300;
+    this.flashN = opts.flashParticles || 900;
+    this.bodyN = opts.bodyParticles || 5200;
+    this.mistN = opts.mistParticles || 1800;
     this.flashPts = makeParticlePool(this.flashN, THREE.AdditiveBlending, sizeScale);
     this.bodyPts = makeParticlePool(this.bodyN, THREE.NormalBlending, sizeScale);
     this.mistPts = makeParticlePool(this.mistN, THREE.NormalBlending, sizeScale);
@@ -323,21 +335,22 @@ export class Blast {
      This is the only part of the shot that should actually glow. */
   _spawnFlash(point, power, isWater){
     const scale = Math.sqrt(power);
-    const n0 = Math.round(90*power);
+    const n0 = Math.round(150*power);
     let idx = 0;
     for(let n = 0; n < n0 && idx < this.flashN; idx++){
       const q = this.flashP[idx];
       if(q.life > 0) continue;
       n++;
       const a = Math.random()*Math.PI*2;
-      const rr = Math.random()*2.2*scale;
-      q.p.set(point.x + Math.cos(a)*rr*0.3, point.y + 0.3, point.z + Math.sin(a)*rr*0.3);
-      const outSpeed = (10 + Math.random()*22)*scale;
-      q.v.set(Math.cos(a)*outSpeed, (12 + Math.random()*14)*scale, Math.sin(a)*outSpeed);
+      const rr = Math.random()*3.4*scale;
+      q.p.set(point.x + Math.cos(a)*rr*0.35, point.y + 0.3, point.z + Math.sin(a)*rr*0.35);
+      const outSpeed = (12 + Math.random()*28)*scale;
+      q.v.set(Math.cos(a)*outSpeed, (13 + Math.random()*16)*scale, Math.sin(a)*outSpeed);
       q.age = 0; q.delay = 0; q.fadeIn = 0; q.fadeOutFrac = 0.65;
       q.life = q.maxLife = 0.14 + Math.random()*0.16;
-      q.size = (9.0 + Math.random()*7.0)*scale;
-      q.sizeGrowth = 0.6;
+      q.size = (13.0 + Math.random()*10.0)*scale;
+      q.sizeGrowth = 0.7;
+      q.jit = 0.75 + Math.random()*0.25;
       q.grav = G*0.7; q.drag = 0.5; q.hug = 0; q.water = isWater; q.groundY = point.y;
       q.turb = 0; q.tPhase = Math.random()*Math.PI*2;
       q.coolTime = q.maxLife;
@@ -352,10 +365,10 @@ export class Blast {
      spray of same-size points always looks like a firework. */
   _spawnColumn(point, power, isWater){
     const scale = Math.sqrt(power);
-    const shaftN = Math.round(230*power);
-    const crownN = Math.round(95*power);
-    const chunkN = Math.round(42*power);
-    const peakH = THREE.MathUtils.lerp(38, 55, Math.random())*scale;
+    const shaftN = Math.round(360*power);
+    const crownN = Math.round(160*power);
+    const chunkN = Math.round(70*power);
+    const peakH = THREE.MathUtils.lerp(46, 70, Math.random())*scale;
 
     let idx = 0;
     for(let n = 0; n < shaftN && idx < this.bodyN; idx++){
@@ -367,8 +380,11 @@ export class Blast {
       // occupy its foot while the energetic droplets form the crown.
       const h01 = 0.16 + Math.pow(Math.random(), 0.72)*0.84;
       const vy = Math.sqrt(2*peakH*h01*G);
-      const outSpeed = (0.45 + Math.pow(Math.random(), 2)*2.5 + (1-h01)*1.8)*scale;
-      const rr = Math.random()*0.8*scale;
+      // Wider outward speed at the foot (1-h01 term) gives the column a
+      // flared base that narrows as it rises — a plumb, uniform-width
+      // shaft is what makes this read as a smear instead of a mass of water.
+      const outSpeed = (0.6 + Math.pow(Math.random(), 2)*5.0 + (1-h01)*4.2)*scale;
+      const rr = Math.random()*2.0*scale;
       q.p.set(point.x + Math.cos(a)*rr, point.y, point.z + Math.sin(a)*rr);
       q.v.set(Math.cos(a)*outSpeed, vy, Math.sin(a)*outSpeed);
       // Keep the droplets through their descent: the rising column breaks up
@@ -376,10 +392,11 @@ export class Blast {
       q.life = q.maxLife = (2*vy/G)*1.05 + 0.15;
       q.delay = 0.035 + Math.random()*0.11;
       q.age = 0; q.fadeIn = 0.05; q.fadeOutFrac = 0.35;
-      q.size = (5.6 + Math.random()*3.0)*scale;
-      q.sizeGrowth = 0;
+      q.size = (7.5 + Math.random()*4.5)*scale;
+      q.sizeGrowth = 0.04;
+      q.jit = 0.7 + Math.random()*0.3;
       q.grav = G; q.drag = 0.12; q.hug = 0; q.water = isWater; q.groundY = point.y;
-      q.turb = (2.0 + Math.random()*1.6)*scale; q.tPhase = Math.random()*Math.PI*2;
+      q.turb = (2.6 + Math.random()*2.2)*scale; q.tPhase = Math.random()*Math.PI*2;
       q.coolTime = 1e9;
       const shade = 0.78 + Math.random()*0.22;
       if(isWater){ q.r=shade; q.g=shade*0.99; q.b=1.0; q.r1=q.r; q.g1=q.g; q.b1=q.b; }
@@ -394,17 +411,18 @@ export class Blast {
       const a = Math.random()*Math.PI*2;
       const h01 = 0.10 + Math.random()*0.58;
       const vy = Math.sqrt(2*peakH*h01*G);
-      const outSpeed = (3.2 + Math.random()*6.0)*scale;
-      const rr = Math.random()*1.8*scale;
+      const outSpeed = (4.5 + Math.random()*9.5)*scale;
+      const rr = Math.random()*3.2*scale;
       q.p.set(point.x + Math.cos(a)*rr, point.y, point.z + Math.sin(a)*rr);
       q.v.set(Math.cos(a)*outSpeed, vy, Math.sin(a)*outSpeed);
       q.life = q.maxLife = (2*vy/G)*1.05 + 0.15;
       q.delay = 0.035 + Math.random()*0.11;
       q.age = 0; q.fadeIn = 0.05; q.fadeOutFrac = 0.35;
-      q.size = (4.5 + Math.random()*3.6)*scale;
-      q.sizeGrowth = 0.15;
+      q.size = (6.0 + Math.random()*5.0)*scale;
+      q.sizeGrowth = 0.18;
+      q.jit = 0.7 + Math.random()*0.3;
       q.grav = G; q.drag = 0.12; q.hug = 0; q.water = isWater; q.groundY = point.y;
-      q.turb = (2.6 + Math.random()*2.0)*scale; q.tPhase = Math.random()*Math.PI*2;
+      q.turb = (3.2 + Math.random()*2.6)*scale; q.tPhase = Math.random()*Math.PI*2;
       q.coolTime = 1e9;
       const shade = 0.85 + Math.random()*0.15;
       if(isWater){ q.r=shade; q.g=shade; q.b=1.0; q.r1=q.r; q.g1=q.g; q.b1=q.b; }
@@ -418,17 +436,18 @@ export class Blast {
       if(q.life > 0) continue;
       n++;
       const a = Math.random()*Math.PI*2;
-      const rr = (0.6 + Math.random()*2.2)*scale;
-      const outSpeed = (2.5 + Math.random()*5.5)*scale;
+      const rr = (0.8 + Math.random()*3.2)*scale;
+      const outSpeed = (3.0 + Math.random()*7.5)*scale;
       q.p.set(point.x + Math.cos(a)*rr, point.y, point.z + Math.sin(a)*rr);
-      q.v.set(Math.cos(a)*outSpeed, (7 + Math.random()*9)*scale, Math.sin(a)*outSpeed);
-      q.life = q.maxLife = 0.9 + Math.random()*0.8;
+      q.v.set(Math.cos(a)*outSpeed, (8 + Math.random()*11)*scale, Math.sin(a)*outSpeed);
+      q.life = q.maxLife = 0.9 + Math.random()*0.9;
       q.delay = 0.02 + Math.random()*0.06;
       q.age = 0; q.fadeIn = 0.08; q.fadeOutFrac = 0.3;
-      q.size = (11.0 + Math.random()*9.0)*scale;
-      q.sizeGrowth = -0.1;
+      q.size = (15.0 + Math.random()*13.0)*scale;
+      q.sizeGrowth = -0.08;
+      q.jit = 0.8 + Math.random()*0.2;
       q.grav = G*0.95; q.drag = 0.22; q.hug = 0; q.water = isWater; q.groundY = point.y;
-      q.turb = 0.6*scale; q.tPhase = Math.random()*Math.PI*2;
+      q.turb = 0.8*scale; q.tPhase = Math.random()*Math.PI*2;
       q.coolTime = 1e9;
       if(isWater){ q.r=0.72; q.g=0.82; q.b=0.92; q.r1=q.r; q.g1=q.g; q.b1=q.b; }
       else       { q.r=0.22; q.g=0.16; q.b=0.10; q.r1=q.r; q.g1=q.g; q.b1=q.b; }
@@ -441,7 +460,7 @@ export class Blast {
      carries the continuous sheet underneath them. */
   _spawnSurge(point, power, isWater){
     const scale = Math.sqrt(power);
-    const n0 = Math.round(210*power);
+    const n0 = Math.round(340*power);
     let idx = 0;
     for(let n = 0; n < n0 && idx < this.bodyN; idx++){
       const q = this.body[idx];
@@ -449,15 +468,16 @@ export class Blast {
       n++;
       const a = Math.random()*Math.PI*2;
       q.p.set(point.x, point.y + 0.6, point.z);
-      const outSpeed = (18 + Math.random()*18)*scale;
-      q.v.set(Math.cos(a)*outSpeed, 0.5 + Math.random()*2, Math.sin(a)*outSpeed);
-      q.life = q.maxLife = 2.2 + Math.random()*1.8;
-      q.delay = 0.08 + Math.random()*0.22;
+      const outSpeed = (22 + Math.random()*24)*scale;
+      q.v.set(Math.cos(a)*outSpeed, 0.5 + Math.random()*2.4, Math.sin(a)*outSpeed);
+      q.life = q.maxLife = 2.4 + Math.random()*2.0;
+      q.delay = 0.08 + Math.random()*0.24;
       q.age = 0; q.fadeIn = 0.1; q.fadeOutFrac = 0.5;
-      q.size = (6.0 + Math.random()*4.0)*scale;
-      q.sizeGrowth = 0.35;               // sheet thins and spreads as it goes
+      q.size = (7.5 + Math.random()*5.0)*scale;
+      q.sizeGrowth = 0.4;               // sheet thins and spreads as it goes
+      q.jit = 0.75 + Math.random()*0.25;
       q.grav = G*0.65; q.drag = 0.45; q.hug = 1; q.water = isWater; q.groundY = point.y;
-      q.turb = (1.0 + Math.random()*1.4)*scale; q.tPhase = Math.random()*Math.PI*2;
+      q.turb = (1.2 + Math.random()*1.8)*scale; q.tPhase = Math.random()*Math.PI*2;
       q.coolTime = 1e9;
       const shade = 0.85 + Math.random()*0.15;
       if(isWater){ q.r=shade; q.g=shade; q.b=1.0; q.r1=q.r; q.g1=q.g; q.b1=q.b; }
@@ -470,7 +490,7 @@ export class Blast {
      Water mist barely rises and hugs the site; land smoke actually rises. */
   _spawnMist(point, power, isWater){
     const scale = Math.sqrt(power);
-    const n0 = Math.round(150*power);
+    const n0 = Math.round(230*power);
     const windA = Math.random()*Math.PI*2, windS = 1 + Math.random()*2;
     let idx = 0;
     for(let n = 0; n < n0 && idx < this.mistN; idx++){
@@ -479,15 +499,16 @@ export class Blast {
       n++;
       const a = Math.random()*Math.PI*2;
       const plume = Math.random() < 0.55;
-      const rr = Math.random()*(plume ? 5 : 9)*scale;
+      const rr = Math.random()*(plume ? 6 : 11)*scale;
       const out = (plume ? (0.4 + Math.random()*1.2) : (2 + Math.random()*3))*scale;
       q.p.set(point.x + Math.cos(a)*rr, point.y + Math.random()*3*scale, point.z + Math.sin(a)*rr);
       q.v.set(Math.cos(windA)*windS + Math.cos(a)*out, (plume ? 2.5 : 0.8) + Math.random()*(plume ? 3 : 2)*scale, Math.sin(windA)*windS + Math.sin(a)*out);
       q.life = q.maxLife = 4.5 + Math.random()*3.5;
       q.delay = 0.5 + Math.random()*0.9;
       q.age = 0; q.fadeIn = 0.4; q.fadeOutFrac = 0.55;
-      q.size = (10.0 + Math.random()*7.0)*scale;
+      q.size = (13.0 + Math.random()*9.0)*scale;
       q.sizeGrowth = isWater ? 0.10 : 0.28;   // smoke expands more than settling spray
+      q.jit = 0.7 + Math.random()*0.3;
       q.grav = isWater ? -0.18 : -1.5;        // just enough buoyancy to linger without a smoke stack
       q.drag = 0.5; q.hug = 0;
       q.turb = 0.5*scale; q.tPhase = Math.random()*Math.PI*2;
@@ -502,9 +523,9 @@ export class Blast {
     for(const s of this.rings){
       if(s.alive) continue;
       s.alive = true; s.t = 0;
-      s.maxT = 2.6 + Math.random()*0.6;
-      s.rate = (28 + Math.random()*10)*Math.sqrt(power);
-      s.r0 = 1.2*Math.sqrt(power);
+      s.maxT = 2.8 + Math.random()*0.6;
+      s.rate = (32 + Math.random()*12)*Math.sqrt(power);
+      s.r0 = 1.6*Math.sqrt(power);
       s.cx = point.x; s.cy = point.y; s.cz = point.z; s.water = isWater;
       s.mesh.visible = true;
       s.mesh.position.set(point.x, 0, point.z);
@@ -522,9 +543,9 @@ export class Blast {
     for(const s of this.surges){
       if(s.alive) continue;
       s.alive = true; s.t = 0;
-      s.maxT = 3.0 + Math.random()*0.8;
-      s.rate = (14 + Math.random()*8)*Math.sqrt(power);
-      s.r0 = 2.0*Math.sqrt(power);
+      s.maxT = 3.2 + Math.random()*0.9;
+      s.rate = (17 + Math.random()*9)*Math.sqrt(power);
+      s.r0 = 2.6*Math.sqrt(power);
       s.cx = point.x; s.cy = point.y; s.cz = point.z; s.water = isWater;
       s.mesh.visible = true;
       s.mesh.position.set(point.x, 0, point.z);
@@ -544,7 +565,7 @@ export class Blast {
       // few seconds past that.
       f.maxT = 13 + Math.random()*3;
       f.cx = point.x; f.cy = point.y; f.cz = point.z; f.water = isWater;
-      f.radius = (5 + Math.random()*3)*Math.sqrt(power);
+      f.radius = (6.5 + Math.random()*3.5)*Math.sqrt(power);
       f.mesh.visible = true;
       f.mesh.position.set(point.x, 0, point.z);
       f.mesh.scale.setScalar(1);
@@ -660,15 +681,15 @@ export class Blast {
         // opacity is fade-in * fade-out, not fade-out alone — popping to full
         // size the instant a droplet spawns is as much a tell as vanishing
         // abruptly at the end of its life.
-        const fadeIn = q.fadeIn > 0 ? Math.min(1, q.age/q.fadeIn) : 1;
-        const fadeOut = Math.min(1, q.life/(q.maxLife*q.fadeOutFrac));
+        const fadeIn = q.fadeIn > 0 ? smooth01(q.age/q.fadeIn) : 1;
+        const fadeOut = smooth01(q.life/(q.maxLife*q.fadeOutFrac));
         const growth = Math.max(0.15, 1 + q.sizeGrowth*q.age);
         sizeArr[i] = q.size*growth;
         const cool = q.coolTime > 0 ? Math.min(1, q.age/q.coolTime) : 1;
         colArr[o4]   = THREE.MathUtils.lerp(q.r, q.r1, cool);
         colArr[o4+1] = THREE.MathUtils.lerp(q.g, q.g1, cool);
         colArr[o4+2] = THREE.MathUtils.lerp(q.b, q.b1, cool);
-        colArr[o4+3] = fadeIn*fadeOut;
+        colArr[o4+3] = fadeIn*fadeOut*q.jit;
       } else {
         arr[o3]=0; arr[o3+1]=-9999; arr[o3+2]=0;
       }
