@@ -275,11 +275,17 @@ export class Strikes {
     // than the bang did.
     if(spec.family === 'incendiary' && spec.spread){
       const n = 4;
+      // Split the store's fuel across the patches and let it burn for the
+      // advertised duration. Handing the heat release rate down like this
+      // keeps the fire's severity tied to how much fuel there actually
+      // was, instead of to how large the footprint happens to be drawn.
+      const duration = spec.burn?.duration ?? 78;
+      const hrr = (spec.mass/duration)*43000/n;    // kW per patch
       for(let i = 0; i < n; i++){
         const t = (i/(n-1) - 0.5)*spec.spread.length;
         this.hazards.push({ type:'fire',
           point:{ x:point.x + this._dir.x*t, y:point.y, z:point.z + this._dir.z*t },
-          radius: spec.spread.width*0.5, age:0, ttl: spec.burn?.duration ?? 78, intensity:1 });
+          radius: spec.spread.width*0.5, age:0, ttl: duration, intensity:1, hrr });
       }
       this.cb.toast?.('The water is burning. Do not sail into it.', 'bad');
     } else if(spec.family === 'chemical' && spec.cloud){

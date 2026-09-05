@@ -39,15 +39,31 @@ const smooth01 = x => { x = clamp(x, 0, 1); return x*x*(3-2*x); };
 
        Q̇ = ṁ" · ΔHc · A             [kW]
 
-   ṁ" ≈ 0.055 kg/m²·s and ΔHc ≈ 43 MJ/kg are the usual coarse figures
-   for a large hydrocarbon pool. χ is the radiative fraction: about 0.30
-   for a small clean flame, but large-diameter pools shroud themselves in
-   soot and radiate a smaller share of their output, so it falls with
-   size. That soot blockage is why a big fire is not as much worse than a
-   medium one as the area alone would suggest. */
-const BURN_RATE   = 0.055;    // kg/m²·s
-const HEAT_OF_COMB = 43000;   // kJ/kg
-const FLUX_CEIL   = 120;      // kW/m², ~the emissive power of a luminous flame front
+   The regime matters enormously here and it is easy to get wrong. A DEEP
+   pool of hydrocarbon burns at ṁ" ≈ 0.055 kg/m²·s. A THIN FILM spread
+   over water does not: it has no depth to sustain that, the water beneath
+   is a heat sink, and the mass rate per unit area falls by more than an
+   order of magnitude. Using the deep-pool figure over a footprint tens of
+   metres across implies a fire that would consume its own fuel in about
+   three seconds, so a store that burns for over a minute across that area
+   is necessarily burning as a thin, patchy film.
+
+   That is not a detail — taking the pool figure made a single canister
+   unsurvivable ninety metres abeam, which is wrong by a wide margin. The
+   heat release rate below is therefore derived from the fuel mass and the
+   burn duration, which conserves fuel by construction and cannot drift
+   out of agreement with the footprint again.
+
+   χ is the radiative fraction: about 0.30 for a small clean flame,
+   falling as large sooty fires shroud themselves. */
+const FILM_BURN_RATE = 0.0024;  // kg/m²·s — thin film over water, not a deep pool
+const HEAT_OF_COMB = 43000;     // kJ/kg
+/* Emissive power seen by something standing in it. A deep pool's flame
+   front runs to ~120 kW/m²; a low, patchy film over water is far cooler
+   and does not cover its own footprint, so the effective figure inside
+   the drawn patch is much lower — still lethal in seconds, but escapable
+   if you are already moving. */
+const FLUX_CEIL   = 45;
 
 function radiativeFraction(diameter){
   // 0.30 small, tailing to ~0.17 for a wide, soot-blocked pool
@@ -176,6 +192,7 @@ export class MunitionEffects {
     this._dmgCarry = 0;
     this._severity = 0;
     this._gasSpent = 0;
+    this._gasCarry = 0;
   }
 
   /* Fire exposure at a point. Separated out so the same code serves the
@@ -191,19 +208,31 @@ export class MunitionEffects {
       const R = Math.max(1.5, h.radius);
       const D = R*2;
       const area = Math.PI*R*R;
-      const Q = BURN_RATE*HEAT_OF_COMB*area*fade*(h.intensity ?? 1);   // kW
+      // Prefer a heat release rate derived from the store's own fuel load
+      // (strikes.js supplies it); fall back to the film rate over the
+      // drawn area for anything spawned without one.
+      const Q = (Number.isFinite(h.hrr) ? h.hrr : FILM_BURN_RATE*HEAT_OF_COMB*area)
+                * fade * (h.intensity ?? 1);   // kW
 
       const dx = x - h.point.x, dz = z - h.point.z;
-      // Radiate from the flame's centre of gravity, roughly a third of the
-      // way up a flame whose height scales as Q̇^2/5 (Heskestad).
-      const flameH = Math.max(0.5, 0.235*Math.pow(Math.max(Q,1), 0.4) - 1.02*D);
+      /* Radiate from the flame's centre of gravity, a third of the way up
+         a flame whose height scales as Q̇^2/5 (Heskestad). That
+         correlation describes a buoyant plume from a compact source and
+         goes negative for a wide, low-intensity film — which is this
+         case, and taking it literally put the flames below knee height
+         and made standing in burning fuel survivable. Floored at a couple
+         of metres, which is what a patchy film over water actually
+         looks like. */
+      const flameH = Math.max(2.2, 0.235*Math.pow(Math.max(Q,1), 0.4) - 1.02*D);
       const dy = y - (h.point.y + flameH*0.33);
       let d2 = dx*dx + dy*dy + dz*dz;
 
       // Inside the burning footprint there is no "distance" left to speak
       // of — you are in the flame, and you take the flame's own emissive
       // power. Outside, the inverse square does the work.
-      const inside = (dx*dx + dz*dz) < R*R && Math.abs(dy) < flameH;
+      // Standing in the patch means standing next to flame, whatever the
+      // area-averaged flux says: you get the flame's own emissive power.
+      const inside = (dx*dx + dz*dz) < R*R && (y - h.point.y) < flameH;
       let q;
       if(inside){
         q = FLUX_CEIL*fade;
@@ -287,7 +316,7 @@ export class MunitionEffects {
       this._severity = sev;
       this.burn = sev;
       this._dmgCarry += cost;
-      if(this._dmgCarry >= 1){
+      if(this._dmgCarry >= 1 || sev >= 1){
         const n = this._dmgCarry;
         this._dmgCarry = 0;
         this.cb.damage?.(n, sev >= 0.98
@@ -313,10 +342,18 @@ export class MunitionEffects {
       // fatal around DOSE_LD50. Same monotonic-cost trick as the burns.
       const frac = clamp((this.dose - DOSE_HARM)/(DOSE_LD50 - DOSE_HARM), 0, 1);
       const want = frac*100;
-      if(want > (this._gasSpent || 0)){
-        const n = want - (this._gasSpent || 0);
+      if(want > this._gasSpent){
+        // Carry the remainder rather than dropping it: per frame the
+        // increment is a fraction of a point, and discarding those meant
+        // the injury accumulated internally and was never actually spent.
+        this._gasCarry += want - this._gasSpent;
         this._gasSpent = want;
-        if(n > 0.4) this.cb.damage?.(n, 'Your chest will not fill. You breathed too much of it.');
+        if(this._gasCarry >= 1 || frac >= 1){
+          const n = this._gasCarry; this._gasCarry = 0;
+          this.cb.damage?.(n, frac >= 0.99
+            ? 'You breathed too much of it, for too long.'
+            : 'Your chest will not fill. Every breath is shallower than the last.');
+        }
       }
     }
 
